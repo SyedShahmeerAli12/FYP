@@ -4,7 +4,6 @@ Smoke detection system with live camera stream, violations logging, and dashboar
 
 ## Quick start
 
-1. **Database:** See [DATABASE_SETUP.md](DATABASE_SETUP.md).
 2. **Install:** `pip install -r requirements.txt`
 3. **Run:** `python main.py`
 4. **Create user:** `python scripts/create_user.py email password "Name"`
