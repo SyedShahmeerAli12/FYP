@@ -19,8 +19,7 @@ clips/
 *.sqlite
 
 # Environment variables
-.env
-.env.local
+
 
 # IDE
 .vscode/
