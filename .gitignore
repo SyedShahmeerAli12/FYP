@@ -18,8 +18,9 @@ clips/
 *.db
 *.sqlite
 
-# Environment variables
-
+# Environment variables (secrets – do not commit)
+.env
+.env.local
 
 # IDE
 .vscode/

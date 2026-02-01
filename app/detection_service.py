@@ -1410,9 +1410,9 @@ class DetectionService:
     async def _get_google_location(self, lat: float, lon: float) -> str:
         """Get detailed area-level location using Google Maps Geocoding API"""
         try:
-            # Hardcoded Google Maps API key
-            google_api_key = "AIzaSyCU3GrxAZ6SrlYidlod1P6taIQgs3rQytQ"
-            
+            google_api_key = (os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+            if not google_api_key:
+                return ""
             # Use Google Maps Reverse Geocoding API
             url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={google_api_key}"
             response = requests.get(url, timeout=5)
