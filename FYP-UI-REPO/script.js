@@ -791,7 +791,7 @@ function connectWebSocket(cameraId) {
         if (data.type === 'violation_alert') {
             // Show immediate prominent alert
             showNotification(
-                data.message || 'Cigarette violation got detected',
+                data.message || 'Violation detected',
                 'violation',
                 true  // Make it prominent
             );
@@ -806,7 +806,7 @@ function connectWebSocket(cameraId) {
         } else if (data.type === 'violation_detected') {
             // Show notification
             showNotification(
-                `Violation detected: ${data.violation.detection_class} (${(data.violation.confidence * 100).toFixed(1)}%)`,
+                'Violation detected',
                 'violation'
             );
             

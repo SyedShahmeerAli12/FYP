@@ -1044,7 +1044,7 @@ class DetectionService:
                     
                     # Send immediate alert to UI via WebSocket (from thread) - ONLY ONCE
                     try:
-                        alert_message = "🚨 SMOKE + CIGARETTE + PERSON VIOLATION DETECTED! 🚨"
+                        alert_message = "Violation detected"
                         alert_notification = {
                             "type": "violation_alert",
                             "message": alert_message,
