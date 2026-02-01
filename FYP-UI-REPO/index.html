@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INFOCAM - Dashboard</title>
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- CSS File -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ================= LOGIN SECTION ================= -->
+    <section id="login-section" style="display: none;">
+        <div class="login-box">
+            <div class="login-title">LOGIN</div>
+            <div class="login-subtitle">Welcome back fillas, please login to your account.</div>
+            
+            <!-- FASTAPI INTEGRATION: Connect this form to your auth endpoint -->
+            <form id="loginForm">
+                <div class="input-group">
+                    <!-- 'name' attribute added for FastAPI OAuth2PasswordRequestForm -->
+                    <input type="text" class="input-field" placeholder="Username/Email" value="admin@DemoCompany.io" name="username">
+                </div>
+                <div class="input-group">
+                    <input type="password" class="input-field" placeholder="Password" value="123456" name="password">
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="rememberMe">
+                    <label for="rememberMe">REMEMBER ME</label>
+                </div>
+                <button type="submit" class="btn-submit">Login</button>
+                <div style="text-align: center; margin-top: 15px;">
+                    <a href="#" id="forgotPasswordLink" style="color: #2563eb; text-decoration: none; font-size: 13px;">Forgot Password?</a>
+                </div>
+            </form>
+            
+            <!-- Forgot Password Modal -->
+            <div id="forgotPasswordModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; justify-content: center; align-items: center;">
+                <div style="background: white; padding: 30px; border-radius: 8px; width: 400px; max-width: 90%;">
+                    <h3 style="margin-bottom: 20px;">Reset Password</h3>
+                    <input type="email" id="resetEmail" placeholder="Enter your email" style="width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <div id="resetTokenDisplay" style="display: none; margin-bottom: 15px; padding: 10px; background: #f3f4f6; border-radius: 6px; font-size: 12px; word-break: break-all;"></div>
+                    <div style="display: flex; gap: 10px;">
+                        <button onclick="requestPasswordReset()" style="flex: 1; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">Send Reset Link</button>
+                        <button onclick="closeForgotPasswordModal()" style="padding: 12px; background: #6b7280; color: white; border: none; border-radius: 6px; cursor: pointer;">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================= DASHBOARD SECTION ================= -->
+    <section id="dashboard-section">
+        
+        <!-- LEFT SIDEBAR -->
+        <aside class="sidebar" id="sidebar">
+            <!-- Updated CCTV Icon -->
+            <div class="sidebar-logo">
+                <i class="fas fa-eye" style="font-size: 26px;"></i>
+            </div>
+            
+            <ul class="nav-links">
+                <!-- Dashboard Link -->
+                <li class="nav-item">
+                    <a href="#" class="active" onclick="showDashboard()">
+                        <i class="fas fa-th-large icon-left"></i>
+                        <span class="link-text">Dashboard</span>
+                    </a>
+                </li>
+
+                <!-- Live Cameras Link -->
+                <li class="nav-item">
+                    <a href="#" id="cameraLink" onclick="loadCamera(1); return false;">
+                        <i class="fas fa-video icon-left"></i>
+                        <span class="link-text">Live Cameras</span>
+                    </a>
+                </li>
+
+                <li class="nav-item"><a href="#" onclick="showViolationsView(); return false;"><i class="fas fa-exclamation-triangle icon-left"></i><span class="link-text">Violations</span><i class="fas fa-chevron-right icon-arrow"></i></a></li>
+                <li class="nav-item"><a href="#" onclick="showUsersView(); return false;"><i class="fas fa-users icon-left"></i><span class="link-text">Users</span><i class="fas fa-chevron-right icon-arrow"></i></a></li>
+                <!-- Removed: Violations Setting / Unit / Ticket (per request) -->
+            </ul>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-wrapper">
+            
+            <!-- HEADER -->
+            <header class="top-header">
+                <div class="menu-toggle" id="sidebarToggle">
+                    <i class="fas fa-bars"></i>
+                </div>
+                
+                <div class="user-menu">
+                    <!-- FASTAPI: Inject user data here -->
+                    <div class="user-details">
+                        <h4>admin@DemoCompany.io</h4>
+                        <span>CompanyAdmin</span>
+                    </div>
+                    <div class="user-avatar" id="userAvatar">
+                        <i class="far fa-user"></i>
+                        <i class="fas fa-caret-down" style="font-size: 10px; margin-left: 4px;"></i>
+                    </div>
+
+                    <!-- PROFILE DROPDOWN -->
+                    <div class="user-dropdown" id="userDropdown">
+                        <div class="dropdown-header">
+                            <h4>admin@DemoCompany.io</h4>
+                            <span>CompanyAdmin</span>
+                        </div>
+                        <div class="dropdown-divider"></div>
+                        <a href="#" class="dropdown-item logout-item" id="logoutBtn">
+                            <i class="fas fa-door-open"></i> Logout
+                        </a>
+                    </div>
+                </div>
+            </header>
+
+            <!-- CONTENT AREA -->
+            <div class="content-area">
+                
+                <!-- VIEW 1: DASHBOARD (KPIs & Charts) -->
+                <div id="dashboard-view">
+                    <div class="filter-container">
+                        <div class="filter-box"><span class="filter-label">Date Range</span><div class="filter-display"><i class="far fa-calendar-alt"></i> November 18, 2025 - November 24, 2025</div></div>
+                        <div class="filter-box"><span class="filter-label">Store</span><div class="filter-display">Select All</div></div>
+                    </div>
+
+                    <div class="stats-grid">
+                        <div class="stat-card bg-blue"><div class="stat-icon-box"><i class="fas fa-hand-paper"></i></div><div class="stat-text-box"><h6>Violations Count</h6><h3>0</h3></div></div>
+                        <div class="stat-card bg-bright-red"><div class="stat-icon-box"><i class="fas fa-bolt"></i></div><div class="stat-text-box"><h6>High Priority Violations</h6><h3>0</h3></div></div>
+                        <div class="stat-card bg-yellow"><div class="stat-icon-box"><i class="fas fa-exclamation-circle"></i></div><div class="stat-text-box"><h6>Medium Priority Violations</h6><h3>0</h3></div></div>
+                        <div class="stat-card bg-orange"><div class="stat-icon-box"><i class="fas fa-info-circle"></i></div><div class="stat-text-box"><h6>Low Priority Violations</h6><h3>0</h3></div></div>
+                    </div>
+
+                    <div class="row-2-col">
+                        <div class="card"><div class="card-header"><div class="card-title">Top 7 Outlets by Violation</div></div><div class="card-body"><div class="list-item"><span>0</span></div><div class="list-item"><span>1</span></div><div class="list-item"><span>2</span></div><div class="list-item"><span>3</span></div></div></div>
+                    </div>
+
+                    <!-- FASTAPI: Populate Charts dynamically -->
+                    <div class="row-2-col">
+                        <div class="card"><div class="card-header"><div class="card-title">Violations by Last 7 Months</div><div class="card-subtitle">Total violations over the last 7 months.</div><select class="select-dropdown" id="monthsFilter"><option value="__all__">All Violations</option></select></div><div class="chart-wrapper"><canvas id="chartMonths"></canvas></div></div>
+                        <div class="card"><div class="card-header"><div class="card-title">Violations by Last 7 Weeks</div><div class="card-subtitle">Total violations over the last 7 weeks.</div><select class="select-dropdown" id="weeksFilter"><option value="__all__">All Violations</option></select></div><div class="chart-wrapper"><canvas id="chartWeeks"></canvas></div></div>
+                    </div>
+
+                    <div class="row-1-col">
+                        <div class="card"><div class="card-header"><div class="card-title">All Violation Summary</div></div><div class="chart-wrapper small-chart"><canvas id="chartSummary"></canvas></div></div>
+                    </div>
+                    
+                    <div class="row-2-col">
+                        <div class="card"><div class="card-header"><div class="card-title">Violation Priority Count</div></div></div>
+                        <div class="card"><div class="card-header"><div class="card-title">Bottom 7 Outlets by Violation</div></div></div>
+                    </div>
+                </div>
+
+                <!-- VIEW 2: LIVE CAMERA STREAM (Hidden Default) -->
+                <div id="camera-view" style="display: none;">
+                    <div class="card" style="height: 100%; min-height: 600px; display: flex; flex-direction: column;">
+                        <div class="card-header">
+                            <div class="card-title" id="cameraTitle">Live Stream: Camera 1</div>
+                            <div class="card-subtitle">Real-time feed via IP/Host connection</div>
+                        </div>
+                        
+                        <!-- VIDEO PLAYER CONTAINER -->
+                        <div style="flex: 1; background: #000; display: flex; justify-content: center; align-items: center; border-radius: 4px; overflow: hidden; position: relative;">
+                            <!-- MJPEG Stream from FastAPI -->
+                            <img id="liveVideoFeed" src="" style="width: 100%; height: auto; max-height: 100%; object-fit: contain; background: #1a1a1a; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 18px;">
+                            <div id="streamStatus" style="position: absolute; top: 10px; right: 10px; background: rgba(107, 114, 128, 0.8); color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold;">
+                                <i class="fas fa-circle" style="font-size: 8px; margin-right: 4px;"></i> OFFLINE
+                            </div>
+                        </div>
+
+                        <div style="padding: 20px; background: #f9fafb; border-top: 1px solid #e5e7eb;">
+                            <h4>Stream Details</h4>
+                            <p style="font-size: 13px; color: #666;">Host IP: <span id="camIp">--</span></p>
+                            <p style="font-size: 13px; color: #666;">Status: <span style="color: green; font-weight: 600;">Online</span></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VIEW 4: USERS MANAGEMENT -->
+                <div id="users-view" style="display: none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Users Management</div>
+                            <div class="card-subtitle">Add or remove admin users</div>
+                        </div>
+                        <div class="card-body" style="padding: 20px;">
+                            <!-- Add Admin Form -->
+                            <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                                <h4 style="margin-bottom: 15px;">Add New Admin</h4>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 15px;">
+                                    <input type="text" id="newAdminName" placeholder="Full Name" style="padding: 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                                    <input type="email" id="newAdminEmail" placeholder="Email" style="padding: 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                                    <input type="password" id="newAdminPassword" placeholder="Password (min 6 chars)" style="padding: 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                                    <button onclick="addAdmin()" style="padding: 10px 20px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">Add Admin</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Users List -->
+                            <div>
+                                <h4 style="margin-bottom: 15px;">All Admins</h4>
+                                <div id="usersList" style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                                    <p style="text-align: center; padding: 40px; color: #6b7280;">Loading users...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="footer">© 2025 INFOCAM. All Rights Reserved.</div>
+            </div>
+        </main>
+    </section>
+    <!-- JS File -->
+    <script src="script.js?v=2"></script>
+</body>
+</html>
