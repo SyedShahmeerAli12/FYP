@@ -915,8 +915,10 @@ class DetectionService:
                 # No need to recalculate - they're already correct
                 
                 # CRITICAL: Store latest detections (thread-safe) - YOLO runs ONLY ONCE per frame
+                # Deduplicate overlapping boxes of same class (fixes double boxes on stream and saved video)
+                if 'bbox_data_display' in locals() and bbox_data_display:
+                    bbox_data_display = self._deduplicate_display_boxes(bbox_data_display)
                 # Everything else (streaming, video saving) will reuse these results
-                # Boxes disappear when detection stops (100% accurate, no persistence)
                 try:
                     with self.frame_locks[camera_id]:
                         # Use display detections so Person boxes show even without a valid pair
@@ -1558,6 +1560,55 @@ class DetectionService:
         
         return filtered
     
+    def _boxes_overlap_enough(self, box1, box2, iou_threshold=0.05, containment_ratio=0.4):
+        """True if boxes are duplicate (overlap by IoU or one contains most of the other)."""
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return False
+        inter = (x2_i - x1_i) * (y2_i - y1_i)
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - inter
+        iou = inter / union if union else 0
+        if iou > iou_threshold:
+            return True
+        # One box mostly inside the other (catches narrow strip inside big box)
+        small_area = min(area1, area2)
+        if small_area > 0 and (inter / small_area) >= containment_ratio:
+            return True
+        return False
+
+    def _deduplicate_display_boxes(self, dets):
+        """Remove duplicate overlapping boxes of the same class (keep highest confidence). Fixes double boxes on stream and saved video."""
+        if not dets:
+            return []
+        by_class = {}
+        for d in dets:
+            c = d.get("class", "")
+            if c not in by_class:
+                by_class[c] = []
+            by_class[c].append(d)
+        out = []
+        for c, class_dets in by_class.items():
+            class_dets = sorted(class_dets, key=lambda x: x.get("confidence", 0), reverse=True)
+            kept = []
+            for d in class_dets:
+                bbox = d.get("bbox", [0, 0, 0, 0])
+                skip = False
+                for k in kept:
+                    if self._boxes_overlap_enough(bbox, k.get("bbox", [0, 0, 0, 0])):
+                        skip = True
+                        break
+                if not skip:
+                    kept.append(d)
+            out.extend(kept)
+        return out
+
     def _calculate_iou(self, box1, box2):
         """Calculate Intersection over Union (IoU) between two boxes"""
         x1_1, y1_1, x2_1, y2_1 = box1
