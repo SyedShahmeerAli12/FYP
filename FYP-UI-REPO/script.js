@@ -1,1211 +1,852 @@
-// API Configuration
-const API_BASE_URL = 'http://localhost:8000';
-let currentCameraId = null;
-let websocketConnection = null;
-let detectionStatus = {};
+'use strict';
 
-// Authentication helpers
-function getAuthToken() {
-    return localStorage.getItem('auth_token');
-}
+const API = 'http://localhost:8000';
 
-function setAuthToken(token) {
-    localStorage.setItem('auth_token', token);
-}
+// ── Auth helpers ─────────────────────────────────────────────────────────────
 
-function removeAuthToken() {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('user_info');
-}
+const getToken    = ()        => localStorage.getItem('auth_token');
+const setToken    = t         => localStorage.setItem('auth_token', t);
+const clearToken  = ()        => { localStorage.removeItem('auth_token'); localStorage.removeItem('user_info'); };
+const getUser     = ()        => { try { return JSON.parse(localStorage.getItem('user_info')); } catch { return null; } };
+const saveUser    = u         => localStorage.setItem('user_info', JSON.stringify(u));
 
-function getUserInfo() {
-    const userInfo = localStorage.getItem('user_info');
-    return userInfo ? JSON.parse(userInfo) : null;
-}
+// ── API wrapper ───────────────────────────────────────────────────────────────
 
-function setUserInfo(user) {
-    localStorage.setItem('user_info', JSON.stringify(user));
-}
+async function api(path, options = {}) {
+    const token = getToken();
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
-// API request helper with authentication
-async function apiRequest(url, options = {}) {
-    const token = getAuthToken();
-    const headers = {
-        'Content-Type': 'application/json',
-        ...options.headers
-    };
-    
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(API + path, { ...options, headers });
+
+    if (res.status === 401) {
+        clearToken();
+        showLogin();
+        throw new Error('Session expired. Please log in again.');
     }
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}${url}`, {
-            ...options,
-            headers
-        });
-        
-        // If unauthorized, redirect to login
-        if (response.status === 401) {
-            removeAuthToken();
-            showLoginPage();
-            throw new Error('Unauthorized - Please login again');
-        }
-        
-        return response;
-    } catch (error) {
-        if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
-            console.error('Network error: Backend may not be running. Please start the backend server.');
-            throw new Error('Cannot connect to backend server. Please ensure the backend is running on http://localhost:8000');
-        }
-        throw error;
-    }
+    return res;
 }
 
-function showLoginPage() {
+// ── Toast notifications ───────────────────────────────────────────────────────
+
+function toast(message, type = 'info', duration = 4000) {
+    const colors = { info: '#3b82f6', success: '#10b981', error: '#ef4444', warning: '#f59e0b', violation: '#dc2626' };
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.style.background = colors[type] || colors.info;
+    t.innerHTML = `
+        <span>${message}</span>
+        <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;padding:0 0 0 12px;">&times;</button>
+    `;
+    document.getElementById('toastContainer').prepend(t);
+    setTimeout(() => t.classList.add('toast-show'), 10);
+    setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, duration);
+}
+
+// ── Page routing ──────────────────────────────────────────────────────────────
+
+const VIEWS = ['dashboard', 'camera', 'violations', 'users'];
+
+function navigate(view) {
+    VIEWS.forEach(v => {
+        const el = document.getElementById(`${v}-view`);
+        if (el) el.style.display = 'none';
+    });
+    const target = document.getElementById(`${view}-view`);
+    if (target) target.style.display = 'block';
+
+    document.querySelectorAll('.nav-link').forEach(a => {
+        a.classList.toggle('active', a.dataset.view === view);
+    });
+
+    window._currentView = view;
+
+    if (view === 'dashboard')  refreshDashboard();
+    if (view === 'violations') loadViolations();
+    if (view === 'users')      loadUsers();
+    if (view === 'camera')     initCameraView();
+}
+
+function showLogin() {
     document.getElementById('login-section').style.display = 'flex';
-    document.getElementById('dashboard-section').style.display = 'none';
+    document.getElementById('app-section').style.display   = 'none';
 }
 
-function showDashboardPage() {
+function showApp(user) {
     document.getElementById('login-section').style.display = 'none';
-    document.getElementById('dashboard-section').style.display = 'flex';
+    document.getElementById('app-section').style.display   = 'flex';
+    populateUserUI(user);
+    navigate('dashboard');
 }
 
-function showErrorMessage(message) {
-    // Remove existing error messages
-    const existingError = document.querySelector('.error-message');
-    if (existingError) {
-        existingError.remove();
-    }
-    
-    // Create error message element
-    const errorDiv = document.createElement('div');
-    errorDiv.className = 'error-message';
-    errorDiv.style.cssText = 'color: #dc2626; font-size: 14px; margin-top: 10px; padding: 10px; background: #fee2e2; border-radius: 6px;';
-    errorDiv.textContent = message;
-    
-    // Insert after login form
-    const loginForm = document.getElementById('loginForm');
-    loginForm.parentNode.insertBefore(errorDiv, loginForm.nextSibling);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (errorDiv.parentNode) {
-            errorDiv.remove();
-        }
-    }, 5000);
+function populateUserUI(user) {
+    if (!user) return;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    set('headerUserName',  user.full_name || user.email);
+    set('headerUserRole',  user.role || 'Admin');
+    set('dropUserName',    user.full_name || user.email);
+    set('dropUserEmail',   user.email || '');
 }
 
-// Check token immediately (before DOM loads) to prevent flash
-(function() {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-        // Hide login, show dashboard immediately
-        document.addEventListener('DOMContentLoaded', function() {
-            document.getElementById('login-section').style.display = 'none';
-            document.getElementById('dashboard-section').style.display = 'flex';
-        });
-    }
-})();
+// ── Invite flow ───────────────────────────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", function() {
-    
-    // Check if user is already logged in
-    const token = getAuthToken();
-    if (token) {
-        // Validate token by calling /api/auth/me
-        apiRequest('/api/auth/me')
-            .then(response => {
-                if (response.ok) {
-                    return response.json();
-                } else {
-                    throw new Error('Invalid token');
-                }
-            })
-            .then(user => {
-                setUserInfo(user);
-                showDashboardPage();
-                loadDashboardData();
-                renderCharts([], [], null);
-                updateUserDisplay(user);
-            })
-            .catch(() => {
-                removeAuthToken();
-                showLoginPage();
-            });
-    } else {
-        // No token, show login page
-        showLoginPage();
-    }
-    
-    // Forgot Password Link
-    const forgotPasswordLink = document.getElementById('forgotPasswordLink');
-    if (forgotPasswordLink) {
-        forgotPasswordLink.addEventListener('click', function(e) {
-            e.preventDefault();
-            showForgotPasswordModal();
-        });
-    }
-    
-    // 1. LOGIN LOGIC
-    const loginForm = document.getElementById('loginForm');
-    if(loginForm) {
-        loginForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const emailInput = loginForm.querySelector('input[name="username"]') || loginForm.querySelector('input[type="text"]');
-            const passwordInput = loginForm.querySelector('input[name="password"]') || loginForm.querySelector('input[type="password"]');
-            
-            if (!emailInput || !passwordInput) {
-                showErrorMessage('Login form fields not found. Please refresh the page.');
-                return;
-            }
-            
-            const email = emailInput.value.trim();
-            const password = passwordInput.value.trim(); // Trim password too to remove any accidental spaces
-            const rememberMe = document.getElementById('rememberMe').checked;
-            
-            // Remove existing error messages
-            const existingError = document.querySelector('.error-message');
-            if (existingError) {
-                existingError.remove();
-            }
-            
-            // Show loading state
-            const submitBtn = loginForm.querySelector('.btn-submit');
-            const originalText = submitBtn.textContent;
-            submitBtn.textContent = 'Logging in...';
-            submitBtn.disabled = true;
-            
-            try {
-                console.log('Attempting login:', { email, password_length: password.length, remember_me: rememberMe });
-                
-                const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        email: email,
-                        password: password,
-                        remember_me: rememberMe
-                    })
-                });
-                
-                const data = await response.json();
-                console.log('Login response:', { status: response.status, data });
-                
-                if (response.ok) {
-                    // Store token and user info
-                    setAuthToken(data.token);
-                    setUserInfo(data.user);
-                    
-                    // Show dashboard
-                    showDashboardPage();
-                    loadDashboardData();
-                    renderCharts([], [], null);
-                    updateUserDisplay(data.user);
-                } else {
-                    // Show error message
-                    console.error('Login failed:', data);
-                    showErrorMessage(data.detail || 'Login failed. Please check your credentials.');
-                }
-            } catch (error) {
-                showErrorMessage('Network error. Please try again.');
-                console.error('Login error:', error);
-            } finally {
-                submitBtn.textContent = originalText;
-                submitBtn.disabled = false;
-            }
-        });
-    }
+async function handleInvitePage(token) {
+    document.getElementById('login-section').style.display  = 'none';
+    document.getElementById('app-section').style.display    = 'none';
+    document.getElementById('invite-section').style.display = 'flex';
 
-    // 2. SIDEBAR TOGGLE
-    const toggleBtn = document.getElementById('sidebarToggle');
-    const sidebar = document.getElementById('sidebar');
-    if (toggleBtn && sidebar) {
-        toggleBtn.addEventListener('click', function() {
-            sidebar.classList.toggle('collapsed');
-            setTimeout(() => { window.dispatchEvent(new Event('resize')); }, 300);
-        });
-    }
-
-    // 3. LIVE CAMERA SUBMENU DROPDOWN
-    // Live Cameras link - now directly loads camera view (no dropdown)
-    const cameraLink = document.getElementById('cameraLink');
-    if(cameraLink) {
-        cameraLink.addEventListener('click', function(e) {
-            e.preventDefault();
-            loadCamera(1); // Default to camera 1
-        });
-    }
-
-    // 4. PROFILE DROPDOWN
-    const userAvatar = document.getElementById('userAvatar');
-    const userDropdown = document.getElementById('userDropdown');
-    if (userAvatar && userDropdown) {
-        userAvatar.addEventListener('click', function(e) {
-            e.stopPropagation();
-            userDropdown.classList.toggle('show');
-        });
-        document.addEventListener('click', function(e) {
-            if (!userDropdown.contains(e.target) && !userAvatar.contains(e.target)) {
-                userDropdown.classList.remove('show');
-            }
-        });
-    }
-
-    // 5. LOGOUT LOGIC
-    const logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', async function(e) {
-            e.preventDefault();
-            try {
-                await apiRequest('/api/auth/logout', { method: 'POST' });
-            } catch (error) {
-                console.error('Logout error:', error);
-            } finally {
-                removeAuthToken();
-            userDropdown.classList.remove('show');
-                showLoginPage();
-            sidebar.classList.remove('collapsed');
-                // Clear form
-                document.getElementById('loginForm').reset();
-            }
-        });
-    }
-    
-    // Update user display in header
-    function updateUserDisplay(user) {
-        const userDetails = document.querySelector('.user-details');
-        if (userDetails && user) {
-            const h4 = userDetails.querySelector('h4');
-            const span = userDetails.querySelector('span');
-            if (h4) h4.textContent = user.email || 'Admin';
-            if (span) span.textContent = user.full_name || 'Admin';
+    try {
+        const res  = await fetch(`${API}/api/auth/invite/${token}`);
+        const data = await res.json();
+        if (!res.ok) {
+            document.getElementById('inviteError').textContent   = data.detail || 'Invalid or expired invite link.';
+            document.getElementById('inviteError').style.display = 'block';
+            document.getElementById('inviteForm').style.display  = 'none';
+            return;
         }
+        document.getElementById('inviteWelcome').textContent = `Hi ${data.full_name}! Set a password for ${data.email}`;
+    } catch {
+        document.getElementById('inviteError').textContent   = 'Cannot reach server.';
+        document.getElementById('inviteError').style.display = 'block';
+        document.getElementById('inviteForm').style.display  = 'none';
+        return;
     }
 
-    // 6. LOAD DASHBOARD DATA
-    async function loadDashboardData() {
+    document.getElementById('inviteForm').addEventListener('submit', async e => {
+        e.preventDefault();
+        const pw  = document.getElementById('invitePassword').value;
+        const pw2 = document.getElementById('inviteConfirm').value;
+        const errEl = document.getElementById('inviteError');
+        errEl.style.display = 'none';
+
+        if (pw !== pw2) {
+            errEl.textContent = 'Passwords do not match.'; errEl.style.display = 'block'; return;
+        }
+        if (pw.length < 6) {
+            errEl.textContent = 'Password must be at least 6 characters.'; errEl.style.display = 'block'; return;
+        }
+
+        const btn = document.getElementById('inviteBtn');
+        document.getElementById('inviteBtnText').style.display = 'none';
+        document.getElementById('inviteSpinner').style.display = 'inline-block';
+        btn.disabled = true;
+
         try {
-            // Load dashboard stats
-            const statsResponse = await apiRequest('/api/dashboard/stats');
-            const stats = await statsResponse.json();
-            
-            // Update KPI cards
-            updateKPICards(stats);
-            
-            // Load violation charts (pass stats for summary chart)
-            await loadViolationCharts(stats);
-        } catch (error) {
-            console.error('Error loading dashboard data:', error);
-        }
-    }
-    
-    // Auto-refresh dashboard every 30 seconds
-    setInterval(() => {
-        if (document.getElementById('dashboard-view') && 
-            document.getElementById('dashboard-view').style.display !== 'none') {
-            loadDashboardData();
-        }
-    }, 30000); // 30 seconds
-    
-    function updateKPICards(stats) {
-        // Update violations count
-        const violationsCountCard = document.querySelector('.stat-card.bg-blue h3');
-        if (violationsCountCard) {
-            violationsCountCard.textContent = stats.total_violations || 0;
-        }
-        
-        // Update high priority violations
-        const highPriorityCard = document.querySelector('.stat-card.bg-bright-red h3');
-        if (highPriorityCard) {
-            highPriorityCard.textContent = stats.high_priority || 0;
-        }
-        
-        // Update medium priority violations
-        const mediumPriorityCard = document.querySelector('.stat-card.bg-yellow h3');
-        if (mediumPriorityCard) {
-            mediumPriorityCard.textContent = stats.medium_priority || 0;
-        }
-        
-        // Update low priority violations
-        const lowPriorityCard = document.querySelector('.stat-card.bg-orange h3');
-        if (lowPriorityCard) {
-            lowPriorityCard.textContent = stats.low_priority || 0;
-        }
-        
-        // Update Top 7 Outlets list
-        updateTopOutletsList(stats.top_outlets || []);
-    }
-    
-    function updateTopViolationsList(violations) {
-        // Find the card with "Top 7 Violations" title
-        const cards = document.querySelectorAll('.card');
-        let topViolationsCard = null;
-        for (let card of cards) {
-            const title = card.querySelector('.card-title');
-            if (title && (title.textContent.includes('Top 7 Violations') || title.textContent.includes('Top 7 Violations by Date'))) {
-                topViolationsCard = card;
-                break;
+            const res  = await fetch(`${API}/api/auth/invite`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, password: pw }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setToken(data.token); saveUser(data.user);
+                document.getElementById('inviteForm').style.display   = 'none';
+                document.getElementById('inviteSuccess').textContent  = 'Account activated! Redirecting…';
+                document.getElementById('inviteSuccess').style.display = 'block';
+                setTimeout(() => {
+                    window.history.replaceState({}, '', '/');
+                    showApp(data.user);
+                    document.getElementById('invite-section').style.display = 'none';
+                }, 1500);
+            } else {
+                errEl.textContent = data.detail || 'Failed to activate.'; errEl.style.display = 'block';
             }
+        } catch {
+            errEl.textContent = 'Cannot reach server.'; errEl.style.display = 'block';
+        } finally {
+            document.getElementById('inviteBtnText').style.display = 'inline';
+            document.getElementById('inviteSpinner').style.display = 'none';
+            btn.disabled = false;
         }
-        
-        if (topViolationsCard) {
-            const cardBody = topViolationsCard.querySelector('.card-body');
-            if (cardBody) {
-                if (violations.length === 0) {
-                    cardBody.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No violations yet</div>';
-                } else {
-                    cardBody.innerHTML = violations.map((v) => {
-                        // Format date: "2025-12-21" -> "December 21, 2025"
-                        let formattedDate = 'Unknown Date';
-                        const dateValue = v.date;
-                        
-                        if (dateValue) {
-                            try {
-                                const dateStr = String(dateValue).trim();
-                                const dateMatch = dateStr.match(/(\d{4}-\d{2}-\d{2})/);
-                                
-                                if (dateMatch) {
-                                    const dateParts = dateMatch[1].split('-');
-                                    const year = parseInt(dateParts[0], 10);
-                                    const month = parseInt(dateParts[1], 10) - 1;
-                                    const day = parseInt(dateParts[2], 10);
-                                    
-                                    if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-                                        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                                                           'July', 'August', 'September', 'October', 'November', 'December'];
-                                        formattedDate = `${monthNames[month]} ${day}, ${year}`;
-                                    }
-                                }
-                            } catch (e) {
-                                console.error('Date formatting error:', e);
-                            }
-                        }
-                        
-                        // EXACT COPY of outlets format - character by character identical structure
-                        return `<div class="list-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee;">
-                            <span style="font-weight: 600; color: #333;">${formattedDate}</span>
-                            <span style="color: #666; font-weight: 600; background: #f3f4f6; padding: 4px 10px; border-radius: 4px;">${v.count || 0}</span>
-                        </div>`;
-                    }).join('');
-                }
-            }
-        }
-    }
-    
-    function updateTopOutletsList(outlets) {
-        // Find the card with "Top 7 Outlets" title
-        const cards = document.querySelectorAll('.card');
-        let outletsCard = null;
-        for (let card of cards) {
-            const title = card.querySelector('.card-title');
-            if (title && title.textContent.includes('Top 7 Outlets')) {
-                outletsCard = card;
-                break;
-            }
-        }
-        
-        if (outletsCard) {
-            const cardBody = outletsCard.querySelector('.card-body');
-            if (cardBody) {
-                if (outlets.length === 0) {
-                    cardBody.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No violations yet</div>';
-                } else {
-                    cardBody.innerHTML = outlets.map((o, idx) => 
-                        `<div class="list-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee;">
-                            <span style="font-weight: 600; color: #333;">${o.location || 'Unknown Location'}</span>
-                            <span style="color: #666; font-weight: 600; background: #f3f4f6; padding: 4px 10px; border-radius: 4px;">${o.count || 0}</span>
-                        </div>`
-                    ).join('');
-                }
-            }
-        }
-    }
-    
-    function _populateChartFiltersFromDetectionClasses(detectionClasses) {
-        const monthsSel = document.getElementById('monthsFilter');
-        const weeksSel = document.getElementById('weeksFilter');
-        if (!monthsSel || !weeksSel) return;
+    });
+}
 
-        const currentMonths = monthsSel.value || "__all__";
-        const currentWeeks = weeksSel.value || "__all__";
+// ── Google OAuth ──────────────────────────────────────────────────────────────
 
-        const uniq = Array.from(new Set(detectionClasses || []));
+async function handleGoogleCredential(response) {
+    const errEl = document.getElementById('loginError');
+    errEl.style.display = 'none';
+    try {
+        const res  = await fetch(`${API}/api/auth/google`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ credential: response.credential }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            setToken(data.token);
+            saveUser(data.user);
+            showApp(data.user);
+        } else {
+            errEl.textContent   = data.detail || 'Google sign-in failed.';
+            errEl.style.display = 'block';
+        }
+    } catch {
+        errEl.textContent   = 'Cannot reach server. Is the backend running?';
+        errEl.style.display = 'block';
+    }
+}
 
-        const fill = (sel, current) => {
-            sel.innerHTML = '';
-            const optAll = document.createElement('option');
-            optAll.value = '__all__';
-            optAll.textContent = 'All Violations';
-            sel.appendChild(optAll);
+async function initGoogleAuth() {
+    try {
+        const res = await fetch(`${API}/api/config`);
+        const { google_client_id } = await res.json();
+        if (!google_client_id) return;
 
-            for (const c of uniq) {
-                const opt = document.createElement('option');
-                opt.value = c;
-                opt.textContent = c;
-                sel.appendChild(opt);
-            }
-            sel.value = current;
-            if (!sel.value) sel.value = '__all__';
+        const waitForGoogle = (resolve) => {
+            if (window.google && window.google.accounts) return resolve();
+            setTimeout(() => waitForGoogle(resolve), 100);
         };
+        await new Promise(waitForGoogle);
 
-        fill(monthsSel, currentMonths);
-        fill(weeksSel, currentWeeks);
+        google.accounts.id.initialize({
+            client_id: google_client_id,
+            callback: handleGoogleCredential,
+            auto_select: false,
+        });
+        google.accounts.id.renderButton(
+            document.getElementById('googleSignInDiv'),
+            { theme: 'outline', size: 'large', width: 320, text: 'signin_with', shape: 'rectangular' }
+        );
+    } catch (e) {
+        console.warn('Google auth unavailable:', e);
+    }
+}
+
+// ── App init ──────────────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Handle invite link (?invite=TOKEN in URL)
+    const urlParams   = new URLSearchParams(window.location.search);
+    const inviteToken = urlParams.get('invite');
+    if (inviteToken) {
+        handleInvitePage(inviteToken);
+        return;
     }
 
-    async function loadViolationCharts(dashboardStats = null) {
+    initGoogleAuth();
+
+    const token = getToken();
+    if (token) {
+        api('/api/auth/me')
+            .then(r => r.json())
+            .then(user => { saveUser(user); showApp(user); })
+            .catch(() => { clearToken(); showLogin(); });
+    } else {
+        showLogin();
+    }
+
+    // Login form
+    document.getElementById('loginForm').addEventListener('submit', async e => {
+        e.preventDefault();
+        const email    = document.getElementById('loginEmail').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        const remember = document.getElementById('rememberMe').checked;
+
+        const errEl  = document.getElementById('loginError');
+        const btn    = document.getElementById('loginBtn');
+        const btnTxt = document.getElementById('loginBtnText');
+        const spin   = document.getElementById('loginSpinner');
+
+        errEl.style.display = 'none';
+        btnTxt.style.display = 'none';
+        spin.style.display   = 'inline-block';
+        btn.disabled = true;
+
         try {
-            // Get dashboard stats if not provided
-            if (!dashboardStats) {
-                try {
-                    const statsResponse = await apiRequest('/api/dashboard/stats');
-                    dashboardStats = await statsResponse.json();
-                    _populateChartFiltersFromDetectionClasses(dashboardStats.detection_classes || []);
-                } catch (e) {
-                    // Non-fatal: charts can still load without filters
-                }
+            const res  = await fetch(`${API}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, remember_me: remember }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setToken(data.token);
+                saveUser(data.user);
+                showApp(data.user);
             } else {
-                _populateChartFiltersFromDetectionClasses(dashboardStats.detection_classes || []);
+                errEl.textContent    = data.detail || 'Incorrect email or password.';
+                errEl.style.display  = 'block';
             }
-
-            const monthsSel = document.getElementById('monthsFilter');
-            const weeksSel = document.getElementById('weeksFilter');
-            const selectedClass = (monthsSel && monthsSel.value && monthsSel.value !== '__all__')
-                ? monthsSel.value
-                : ((weeksSel && weeksSel.value && weeksSel.value !== '__all__') ? weeksSel.value : null);
-
-            const filterQs = selectedClass ? `&detection_class=${encodeURIComponent(selectedClass)}` : '';
-
-            // Load monthly stats
-            const monthlyResponse = await apiRequest(`/api/violations/stats?period=month${filterQs}`);
-            const monthlyStats = await monthlyResponse.json();
-            
-            // Load weekly stats
-            const weeklyResponse = await apiRequest(`/api/violations/stats?period=week${filterQs}`);
-            const weeklyStats = await weeklyResponse.json();
-            
-            renderCharts(monthlyStats.stats, weeklyStats.stats, dashboardStats);
-        } catch (error) {
-            console.error('Error loading violation charts:', error);
-            renderCharts([], [], null);
+        } catch {
+            errEl.textContent   = 'Cannot reach server. Is the backend running?';
+            errEl.style.display = 'block';
+        } finally {
+            btnTxt.style.display = 'inline';
+            spin.style.display   = 'none';
+            btn.disabled = false;
         }
-    }
+    });
 
-    // Re-render charts on filter change
-    const monthsSel = document.getElementById('monthsFilter');
-    const weeksSel = document.getElementById('weeksFilter');
-    if (monthsSel) {
-        monthsSel.addEventListener('change', () => loadViolationCharts());
-    }
-    if (weeksSel) {
-        weeksSel.addEventListener('change', () => loadViolationCharts());
-    }
-    
-    // 7. CHARTS CONFIGURATION
-    function renderCharts(monthlyData = [], weeklyData = [], dashboardStats = null) {
-        const ctxMonths = document.getElementById('chartMonths');
-        if (ctxMonths) {
-            if (window.chartMonthsInstance) window.chartMonthsInstance.destroy();
-            
-            const labels = monthlyData.map(s => s.period).reverse() || ['', '', '', 'October 2025', '', '', ''];
-            const data = monthlyData.map(s => s.count).reverse() || [0, 0, 0, 0, 0, 0, 0];
-            
-            window.chartMonthsInstance = new Chart(ctxMonths.getContext('2d'), {
-                type: 'bar',
-                data: { 
-                    labels: labels, 
-                    datasets: [{ 
-                        label: 'Violations', 
-                        data: data, 
-                        backgroundColor: '#7b1fa2', 
-                        barThickness: 80, 
-                        borderRadius: 4 
-                    }] 
-                },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { legend: { display: false } }, 
-                    scales: { y: { beginAtZero: true } } 
-                }
-            });
+    // Forgot password link
+    document.getElementById('forgotLink').addEventListener('click', e => {
+        e.preventDefault();
+        document.getElementById('resetEmail').value  = '';
+        document.getElementById('resetMsg').style.display = 'none';
+        document.getElementById('forgotModal').style.display = 'flex';
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', e => {
+        const dd  = document.getElementById('userDropdown');
+        const pill = document.getElementById('userPill');
+        if (!dd.contains(e.target) && !pill.contains(e.target)) {
+            dd.classList.remove('open');
+            document.getElementById('pillChevron').classList.remove('rotated');
         }
-        
-        const ctxWeeks = document.getElementById('chartWeeks');
-        if (ctxWeeks) {
-            if (window.chartWeeksInstance) window.chartWeeksInstance.destroy();
-            
-            const labels = weeklyData.map(s => s.period).reverse() || ['Week: 41', '', '', '', '', '', 'Week: 43'];
-            const data = weeklyData.map(s => s.count).reverse() || [0, 0, 0, 0, 0, 0, 0];
-            
-            window.chartWeeksInstance = new Chart(ctxWeeks.getContext('2d'), {
-                data: { 
-                    labels: labels, 
-                    datasets: [{ 
-                        type: 'bar', 
-                        label: 'Violations', 
-                        data: data, 
-                        backgroundColor: '#7b1fa2', 
-                        barThickness: 60, 
-                        order: 2 
-                    }] 
-                },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }, 
-                    scales: { y: { beginAtZero: true } } 
-                }
-            });
-        }
-        
-        const ctxSummary = document.getElementById('chartSummary');
-        if (ctxSummary) {
-            if (window.chartSummaryInstance) window.chartSummaryInstance.destroy();
-            
-            // Get hourly summary data from dashboard stats
-            const hourlyData = (dashboardStats && dashboardStats.hourly_summary) ? dashboardStats.hourly_summary : [];
-            
-            // Format labels (show hour in HH:MM format)
-            let labels = [];
-            let data = [];
-            
-            if (hourlyData.length > 0) {
-                labels = hourlyData.map(item => {
-                    try {
-                        const date = new Date(item.hour);
-                        return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-                    } catch (e) {
-                        return String(item.hour).substring(11, 16); // Extract HH:MM from ISO string
-                    }
-                });
-                data = hourlyData.map(item => item.count || 0);
-            } else {
-                // If no hourly data, show last 24 hours with zeros
-                const now = new Date();
-                for (let i = 23; i >= 0; i--) {
-                    const hour = new Date(now.getTime() - i * 60 * 60 * 1000);
-                    labels.push(hour.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }));
-                    data.push(0);
-                }
-            }
-            
-            window.chartSummaryInstance = new Chart(ctxSummary.getContext('2d'), {
-                type: 'line', 
-                data: { 
-                    labels: labels,
-                    datasets: [{
-                        label: 'Violations',
-                        data: data,
-                        borderColor: '#7b1fa2',
-                        backgroundColor: 'rgba(123, 31, 162, 0.1)',
-                        tension: 0.4,
-                        fill: true,
-                        pointRadius: 4,
-                        pointHoverRadius: 6
-                    }]
-                },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false, 
-                    plugins: { 
-                        legend: { display: false },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false
-                        }
-                    }, 
-                    scales: { 
-                        y: { 
-                            beginAtZero: true,
-                            ticks: {
-                                stepSize: 1
-                            }
-                        },
-                        x: { 
-                            grid: { display: false },
-                            ticks: {
-                                maxRotation: 45,
-                                minRotation: 0
-                            }
-                        } 
-                    },
-                    interaction: {
-                        mode: 'nearest',
-                        axis: 'x',
-                        intersect: false
-                    }
-                }
-            });
-        }
-    }
+    });
+
+    // Auto-refresh dashboard every 30 s
+    setInterval(() => { if (window._currentView === 'dashboard') refreshDashboard(); }, 30000);
 });
 
-// 7. GLOBAL FUNCTIONS FOR HTML ONCLICK
+// ── Auth actions ──────────────────────────────────────────────────────────────
 
-function showDashboard() {
-    document.getElementById('dashboard-view').style.display = 'block';
-    document.getElementById('camera-view').style.display = 'none';
-    // Reset active class
-    document.querySelectorAll('.nav-item a').forEach(el => el.classList.remove('active'));
-    // Set dashboard active
-    document.querySelector('.nav-item a[onclick="showDashboard()"]').classList.add('active');
-    // Refresh dashboard data when switching to dashboard
-    loadDashboardData();
-}
-
-async function loadCamera(cameraId) {
-    document.getElementById('dashboard-view').style.display = 'none';
-    document.getElementById('camera-view').style.display = 'block';
-    
-    // Reset active class on all nav items
-    document.querySelectorAll('.nav-item a').forEach(el => el.classList.remove('active'));
-    // Set Live Cameras as active
-    const cameraLink = document.getElementById('cameraLink');
-    if (cameraLink) {
-        cameraLink.classList.add('active');
-    }
-
-    document.getElementById('cameraTitle').innerText = `Live Stream: Camera 0${cameraId}`;
-    document.getElementById('camIp').innerText = `192.168.1.10${cameraId}`;
-    
-    currentCameraId = cameraId;
-    
-    // Connect WebSocket for real-time alerts
-    connectWebSocket(cameraId);
-    
-    // Load video stream
-    const videoFeed = document.getElementById('liveVideoFeed');
-    const streamStatus = document.getElementById('streamStatus');
-    
-    // Set up MJPEG stream with token in query parameter (img tags can't send headers)
-    const token = getAuthToken();
-    if (token) {
-        videoFeed.src = `${API_BASE_URL}/api/cameras/${cameraId}/stream?token=${token}`;
+function togglePassword() {
+    const inp  = document.getElementById('loginPassword');
+    const icon = document.getElementById('pwEyeIcon');
+    if (inp.type === 'password') {
+        inp.type = 'text';
+        icon.className = 'far fa-eye-slash';
     } else {
-        videoFeed.src = `${API_BASE_URL}/api/cameras/${cameraId}/stream`;
+        inp.type = 'password';
+        icon.className = 'far fa-eye';
     }
-    videoFeed.onload = () => {
-        if (streamStatus) {
-            streamStatus.innerHTML = '<i class="fas fa-circle" style="font-size: 8px; margin-right: 4px;"></i> LIVE';
-            streamStatus.style.background = 'rgba(220, 38, 38, 0.8)';
-        }
-        if (placeholder) placeholder.style.display = 'none';
-    };
-    videoFeed.onerror = () => {
-        if (streamStatus) {
-            streamStatus.innerHTML = '<i class="fas fa-circle" style="font-size: 8px; margin-right: 4px;"></i> ERROR';
-            streamStatus.style.background = 'rgba(239, 68, 68, 0.8)';
-        }
-    };
-    
-    // Check detection status
-    await checkDetectionStatus(cameraId);
-    
-    console.log(`Switching to Camera ${cameraId}`);
 }
 
-async function checkDetectionStatus(cameraId) {
+async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
+    clearToken();
+    stopWebSocket();
+    showLogin();
+    document.getElementById('loginForm').reset();
+}
+
+async function requestReset() {
+    const email = document.getElementById('resetEmail').value.trim();
+    const msgEl = document.getElementById('resetMsg');
+    const btn   = document.getElementById('resetBtn');
+    if (!email) { msgEl.className = 'alert alert-danger'; msgEl.textContent = 'Please enter your email.'; msgEl.style.display = 'block'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
     try {
-        const response = await apiRequest(`/api/cameras/${cameraId}/status`);
-        const data = await response.json();
-        detectionStatus[cameraId] = data.is_running;
-        updateDetectionButton(cameraId, data.is_running);
-    } catch (error) {
-        console.error('Error checking detection status:', error);
-    }
-}
-
-function updateDetectionButton(cameraId, isRunning) {
-    let btnContainer = document.getElementById('detectionButtonContainer');
-    if (!btnContainer) {
-        // Create button container if it doesn't exist
-        const cameraCard = document.querySelector('#camera-view .card');
-        const cardHeader = cameraCard.querySelector('.card-header');
-        btnContainer = document.createElement('div');
-        btnContainer.id = 'detectionButtonContainer';
-        btnContainer.style.marginTop = '10px';
-        cardHeader.appendChild(btnContainer);
-    }
-    
-    btnContainer.innerHTML = `
-        <button id="detectionToggleBtn" class="detection-btn ${isRunning ? 'stop' : 'start'}" 
-                onclick="toggleDetection(${cameraId})">
-            <i class="fas ${isRunning ? 'fa-stop' : 'fa-play'}"></i>
-            ${isRunning ? 'Stop Detection' : 'Start Detection'}
-        </button>
-        <span id="detectionStatus" style="margin-left: 10px; color: ${isRunning ? 'green' : 'gray'};">
-            ${isRunning ? '● Detection Active' : '○ Detection Inactive'}
-        </span>
-    `;
-}
-
-async function toggleDetection(cameraId) {
-    const isRunning = detectionStatus[cameraId] || false;
-    
-    try {
-        const endpoint = isRunning ? 'stop' : 'start';
-        const response = await apiRequest(`/api/cameras/${cameraId}/${endpoint}`, {
-            method: 'POST'
+        const res  = await fetch(`${API}/api/auth/forgot-password`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email }),
         });
-        
-        if (response.ok) {
-            detectionStatus[cameraId] = !isRunning;
-            updateDetectionButton(cameraId, !isRunning);
-            
-            if (!isRunning) {
-                // Show notification
-                showNotification('Detection started successfully!', 'success');
+        const data = await res.json();
+        msgEl.className    = 'alert alert-success';
+        msgEl.textContent  = `Token: ${data.reset_token || '—'} (in production this would be emailed)`;
+        msgEl.style.display = 'block';
+    } catch {
+        msgEl.className    = 'alert alert-danger';
+        msgEl.textContent  = 'Request failed. Please try again.';
+        msgEl.style.display = 'block';
+    } finally {
+        btn.disabled    = false;
+        btn.textContent = 'Send Reset Link';
+    }
+}
+
+function closeForgotModal() {
+    document.getElementById('forgotModal').style.display = 'none';
+}
+
+// ── Sidebar & dropdown ────────────────────────────────────────────────────────
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('collapsed');
+}
+
+function toggleDropdown() {
+    const dd = document.getElementById('userDropdown');
+    dd.classList.toggle('open');
+    document.getElementById('pillChevron').classList.toggle('rotated');
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+let chartMonths, chartWeeks, chartSummary;
+
+async function refreshDashboard() {
+    try {
+        const res   = await api('/api/dashboard/stats');
+        const stats = await res.json();
+        renderKPIs(stats);
+        populateFilters(stats.detection_classes || []);
+        await renderCharts(stats);
+        renderOutlets(stats.top_outlets || []);
+        renderRecentDates(stats.top_violations || []);
+    } catch (err) {
+        toast('Failed to load dashboard: ' + err.message, 'error');
+    }
+}
+
+function renderKPIs(s) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? '—'; };
+    set('statTotal',  s.total_violations);
+    set('statHigh',   s.high_priority);
+    set('statMedium', s.medium_priority);
+    set('statLow',    s.low_priority);
+    set('statToday',  s.today_violations);
+}
+
+function populateFilters(classes) {
+    ['monthsFilter', 'weeksFilter'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const cur = sel.value;
+        sel.innerHTML = '<option value="__all__">All Types</option>';
+        classes.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+        if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+    });
+}
+
+async function reloadCharts() {
+    const cls = (() => {
+        const m = document.getElementById('monthsFilter')?.value;
+        return m && m !== '__all__' ? m : null;
+    })();
+    const qs = cls ? `&detection_class=${encodeURIComponent(cls)}` : '';
+    try {
+        const [mRes, wRes] = await Promise.all([
+            api(`/api/violations/stats?period=month${qs}`),
+            api(`/api/violations/stats?period=week${qs}`),
+        ]);
+        const [mData, wData] = await Promise.all([mRes.json(), wRes.json()]);
+        buildChartMonths(mData.stats || []);
+        buildChartWeeks(wData.stats  || []);
+    } catch {}
+}
+
+async function renderCharts(stats) {
+    await reloadCharts();
+    buildChartSummary(stats.hourly_summary || []);
+}
+
+function buildChartMonths(data) {
+    const ctx = document.getElementById('chartMonths');
+    if (!ctx) return;
+    if (chartMonths) chartMonths.destroy();
+    chartMonths = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.period).reverse(),
+            datasets: [{ label: 'Violations', data: data.map(d => d.count).reverse(), backgroundColor: '#6d28d9', borderRadius: 4, barThickness: 40 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } },
+    });
+}
+
+function buildChartWeeks(data) {
+    const ctx = document.getElementById('chartWeeks');
+    if (!ctx) return;
+    if (chartWeeks) chartWeeks.destroy();
+    chartWeeks = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.period).reverse(),
+            datasets: [{ label: 'Violations', data: data.map(d => d.count).reverse(), backgroundColor: '#0ea5e9', borderRadius: 4, barThickness: 40 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } },
+    });
+}
+
+function buildChartSummary(data) {
+    const ctx = document.getElementById('chartSummary');
+    if (!ctx) return;
+    if (chartSummary) chartSummary.destroy();
+    const now = new Date();
+    let labels = [], values = [];
+    if (data.length > 0) {
+        labels = data.map(d => { try { return new Date(d.hour).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch { return d.hour; } });
+        values = data.map(d => d.count || 0);
+    } else {
+        for (let i = 23; i >= 0; i--) {
+            labels.push(new Date(now - i * 3600000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }));
+            values.push(0);
+        }
+    }
+    chartSummary = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{ label: 'Violations', data: values, borderColor: '#6d28d9', backgroundColor: 'rgba(109,40,217,0.1)', tension: 0.4, fill: true, pointRadius: 3 }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false } } } },
+    });
+}
+
+function renderOutlets(outlets) {
+    const el = document.getElementById('outletsList');
+    if (!el) return;
+    el.innerHTML = outlets.length ? outlets.map(o => `
+        <div class="list-row">
+            <span>${o.location || 'Unknown'}</span>
+            <span class="badge">${o.count}</span>
+        </div>`).join('') : '<div class="empty-msg">No data yet</div>';
+}
+
+function renderRecentDates(dates) {
+    const el = document.getElementById('recentDatesList');
+    if (!el) return;
+    el.innerHTML = dates.length ? dates.map(d => {
+        const dateStr = d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        return `<div class="list-row"><span>${dateStr}</span><span class="badge">${d.count}</span></div>`;
+    }).join('') : '<div class="empty-msg">No data yet</div>';
+}
+
+// ── Camera view ───────────────────────────────────────────────────────────────
+
+let currentCameraId = 1;
+let ws = null;
+let detectionRunning = false;
+
+function initCameraView() {
+    switchCamera(currentCameraId);
+}
+
+async function switchCamera(id) {
+    currentCameraId = id;
+    document.querySelectorAll('.cam-btn').forEach((b, i) => b.classList.toggle('active', i + 1 === id));
+    document.getElementById('cameraTitle').textContent = `Live Camera — Cam ${id}`;
+    document.getElementById('camName').textContent = `Camera 0${id}`;
+
+    const feed   = document.getElementById('liveVideoFeed');
+    const badge  = document.getElementById('streamBadge');
+    const holder = document.getElementById('streamPlaceholder');
+
+    feed.src = '';
+    badge.className = 'stream-badge offline';
+    badge.innerHTML = '<i class="fas fa-circle"></i> OFFLINE';
+    holder.style.display = 'flex';
+
+    connectWebSocket(id);
+
+    try {
+        const res  = await api(`/api/cameras/${id}/status`);
+        const data = await res.json();
+        detectionRunning = data.is_running;
+        updateDetectionBtn();
+        if (detectionRunning) startStream(id);
+    } catch (err) {
+        toast('Cannot reach server', 'error');
+    }
+}
+
+function startStream(id) {
+    const feed   = document.getElementById('liveVideoFeed');
+    const badge  = document.getElementById('streamBadge');
+    const holder = document.getElementById('streamPlaceholder');
+    const token  = getToken();
+
+    feed.src = `${API}/api/cameras/${id}/stream${token ? '?token=' + token : ''}`;
+    feed.onload = () => {
+        badge.className = 'stream-badge live';
+        badge.innerHTML = '<i class="fas fa-circle"></i> LIVE';
+        holder.style.display = 'none';
+    };
+    feed.onerror = () => {
+        badge.className = 'stream-badge offline';
+        badge.innerHTML = '<i class="fas fa-circle"></i> ERROR';
+    };
+}
+
+function stopStream() {
+    const feed  = document.getElementById('liveVideoFeed');
+    const badge = document.getElementById('streamBadge');
+    const holder = document.getElementById('streamPlaceholder');
+    feed.src = '';
+    badge.className = 'stream-badge offline';
+    badge.innerHTML = '<i class="fas fa-circle"></i> OFFLINE';
+    holder.style.display = 'flex';
+}
+
+function updateDetectionBtn() {
+    const btn  = document.getElementById('detectionToggleBtn');
+    const stat = document.getElementById('camDetectionStatus');
+    if (detectionRunning) {
+        btn.className  = 'btn btn-danger';
+        btn.innerHTML  = '<i class="fas fa-stop"></i> Stop Detection';
+        stat.textContent = 'Active';
+        stat.className = 'status-dot active';
+    } else {
+        btn.className  = 'btn btn-success';
+        btn.innerHTML  = '<i class="fas fa-play"></i> Start Detection';
+        stat.textContent = 'Inactive';
+        stat.className = 'status-dot';
+    }
+}
+
+async function toggleDetection() {
+    const btn = document.getElementById('detectionToggleBtn');
+    btn.disabled = true;
+    const action = detectionRunning ? 'stop' : 'start';
+    try {
+        const res = await api(`/api/cameras/${currentCameraId}/${action}`, { method: 'POST' });
+        if (res.ok) {
+            detectionRunning = !detectionRunning;
+            updateDetectionBtn();
+            if (detectionRunning) {
+                startStream(currentCameraId);
+                toast('Detection started', 'success');
             } else {
-                showNotification('Detection stopped.', 'info');
+                stopStream();
+                toast('Detection stopped', 'info');
             }
         } else {
-            throw new Error('Failed to toggle detection');
+            const d = await res.json();
+            toast(d.detail || 'Action failed', 'error');
         }
-    } catch (error) {
-        console.error('Error toggling detection:', error);
-        showNotification('Error toggling detection. Please try again.', 'error');
+    } catch (err) {
+        toast('Request failed: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
     }
 }
 
 function connectWebSocket(cameraId) {
-    // Close existing connection
-    if (websocketConnection) {
-        websocketConnection.close();
-    }
-    
-    // Connect to WebSocket
-    const ws = new WebSocket(`ws://localhost:8000/ws/${cameraId}`);
-    
-    ws.onopen = () => {
-        console.log('WebSocket connected');
-    };
-    
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'violation_alert') {
-            // Show immediate prominent alert
-            showNotification(
-                data.message || 'Violation detected',
-                'violation',
-                true  // Make it prominent
-            );
-            
-            // Refresh violations list if on violations page
-            if (window.currentView === 'violations') {
-                loadViolations();
-            }
-            
-            // Update dashboard stats
-            loadDashboardData();
-        } else if (data.type === 'violation_detected') {
-            // Show notification
-            showNotification(
-                'Violation detected',
-                'violation'
-            );
-            
-            // Refresh violations list if on violations page
-            if (window.currentView === 'violations') {
-                loadViolations();
-            }
-            
-            // Update dashboard stats
-            loadDashboardData();
+    if (ws) ws.close();
+    ws = new WebSocket(`ws://localhost:8000/ws/${cameraId}`);
+    ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'violation_alert' || data.type === 'violation_detected') {
+            const msg = `🚨 Violation on Camera ${data.camera_id} — conf: ${(data.confidence * 100).toFixed(0)}%`;
+            toast(msg, 'violation', 8000);
+            pushLiveAlert(data);
+            if (window._currentView === 'violations') loadViolations();
+            if (window._currentView === 'dashboard')  refreshDashboard();
         }
     };
-    
-    ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-    };
-    
-    ws.onclose = () => {
-        console.log('WebSocket disconnected');
-    };
-    
-    websocketConnection = ws;
+    ws.onerror  = () => {};
+    ws.onclose  = () => {};
 }
 
-function showNotification(message, type = 'info', prominent = false) {
-    // Create notification element
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.textContent = message;
-    
-    // Make violation alerts more prominent
-    const isProminent = prominent || type === 'violation';
-    const padding = isProminent ? '20px 25px' : '15px 20px';
-    const fontSize = isProminent ? '18px' : '14px';
-    const fontWeight = isProminent ? 'bold' : 'normal';
-    const duration = isProminent ? 8000 : 5000; // Show longer for violations
-    
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        padding: ${padding};
-        background: ${type === 'violation' ? '#dc2626' : type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6'};
-        color: white;
-        border-radius: 6px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        z-index: 10000;
-        animation: slideIn 0.3s ease-out;
-        font-size: ${fontSize};
-        font-weight: ${fontWeight};
-        ${isProminent ? 'border: 3px solid #ff0000;' : ''}
+function stopWebSocket() { if (ws) { ws.close(); ws = null; } }
+
+let alertCount = 0;
+function pushLiveAlert(data) {
+    alertCount++;
+    const feed = document.getElementById('liveAlertFeed');
+    if (!feed) return;
+    const first = feed.querySelector('.empty-msg');
+    if (first) first.remove();
+    const ts  = new Date().toLocaleTimeString();
+    const row = document.createElement('div');
+    row.className = 'alert-row';
+    row.innerHTML = `
+        <span class="alert-dot"></span>
+        <span class="alert-text">${data.detection_class || 'Violation'} — Cam ${data.camera_id}</span>
+        <span class="alert-time">${ts}</span>
     `;
-    
-    document.body.appendChild(notification);
-    
-    // Remove after duration
-    setTimeout(() => {
-        notification.style.animation = 'slideOut 0.3s ease-out';
-        setTimeout(() => notification.remove(), 300);
-    }, duration);
+    feed.prepend(row);
+    // Keep last 20 alerts
+    while (feed.children.length > 20) feed.removeChild(feed.lastChild);
+
+    // Bell badge
+    const bell  = document.getElementById('alertBell');
+    const badge = document.getElementById('bellBadge');
+    bell.style.display  = 'flex';
+    badge.textContent   = alertCount;
 }
 
-// Violations viewing functions
-async function showViolationsView() {
-    document.getElementById('dashboard-view').style.display = 'none';
-    document.getElementById('camera-view').style.display = 'none';
-    
-    let violationsView = document.getElementById('violations-view');
-    if (!violationsView) {
-        violationsView = createViolationsView();
-        document.querySelector('.content-area').appendChild(violationsView);
-    }
-    
-    violationsView.style.display = 'block';
-    window.currentView = 'violations';
-    
-    await loadViolations();
-}
-
-function createViolationsView() {
-    const view = document.createElement('div');
-    view.id = 'violations-view';
-    view.innerHTML = `
-        <div class="filter-container">
-            <div class="filter-box">
-                <span class="filter-label">Period</span>
-                <select id="violationPeriod" class="filter-display" onchange="loadViolations()">
-                    <option value="all">All Time</option>
-                    <option value="month">This Month</option>
-                    <option value="week">This Week</option>
-                    <option value="today">Today</option>
-                </select>
-            </div>
-            <div class="filter-box">
-                <span class="filter-label">Camera</span>
-                <select id="violationCamera" class="filter-display" onchange="loadViolations()">
-                    <option value="all">All Cameras</option>
-                    <option value="1">Camera 01</option>
-                </select>
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">Violations Log</div>
-            </div>
-            <div class="card-body" id="violationsList">
-                <div style="text-align: center; padding: 40px;">Loading violations...</div>
-            </div>
-        </div>
-    `;
-    return view;
-}
+// ── Violations view ───────────────────────────────────────────────────────────
 
 async function loadViolations() {
+    const container = document.getElementById('violationsList');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-msg"><span class="spinner dark"></span> Loading…</div>';
+
+    const period   = document.getElementById('violationPeriod')?.value || 'all';
+    const cameraId = document.getElementById('violationCamera')?.value || 'all';
+
+    let url = '/api/violations?limit=100';
+    if (cameraId !== 'all') url += `&camera_id=${cameraId}`;
+
+    const now = new Date();
+    if (period === 'today') {
+        url += `&start_date=${now.toISOString().split('T')[0]}`;
+    } else if (period === 'week') {
+        const d = new Date(now); d.setDate(d.getDate() - 7);
+        url += `&start_date=${d.toISOString().split('T')[0]}`;
+    } else if (period === 'month') {
+        const d = new Date(now); d.setMonth(d.getMonth() - 1);
+        url += `&start_date=${d.toISOString().split('T')[0]}`;
+    }
+
     try {
-        const period = document.getElementById('violationPeriod')?.value || 'all';
-        const cameraId = document.getElementById('violationCamera')?.value || '';
-        
-        let url = '/api/violations?limit=100';
-        if (cameraId && cameraId !== 'all') {
-            url += `&camera_id=${cameraId}`;
+        const res  = await api(url);
+        const data = await res.json();
+        const list = data.violations || [];
+
+        if (!list.length) {
+            container.innerHTML = '<div class="empty-msg" style="padding:40px;">No violations found</div>';
+            return;
         }
-        
-        const response = await apiRequest(url);
-        const data = await response.json();
-        
-        const violationsList = document.getElementById('violationsList');
-        if (!violationsList) return;
-        
-        if (data.violations && data.violations.length > 0) {
-            violationsList.innerHTML = data.violations.map(v => `
-                <div class="violation-item">
-                    <div class="violation-info">
-                        <h4>${v.detection_class} - ${(v.confidence * 100).toFixed(1)}%</h4>
-                        <p>Camera ${v.camera_id} • ${new Date(v.timestamp).toLocaleString()}</p>
-                        ${v.location ? `<p>Location: ${v.location}</p>` : ''}
+        container.innerHTML = list.map(v => {
+            const prio  = v.priority || 'low';
+            const ts    = new Date(v.timestamp).toLocaleString();
+            const conf  = (v.confidence * 100).toFixed(1);
+            return `
+            <div class="violation-row">
+                <div class="v-left">
+                    <span class="priority-badge ${prio}">${prio.toUpperCase()}</span>
+                    <div class="v-info">
+                        <span class="v-class">${v.detection_class}</span>
+                        <span class="v-meta">Camera ${v.camera_id} &bull; ${ts} &bull; Confidence: ${conf}%</span>
+                        ${v.location ? `<span class="v-meta"><i class="fas fa-map-marker-alt"></i> ${v.location}</span>` : ''}
                     </div>
-                    <button onclick="downloadViolationVideo(${v.id})" class="btn-download">Download Video</button>
                 </div>
-            `).join('');
-        } else {
-            violationsList.innerHTML = '<p style="text-align: center; padding: 20px; color: #6b7280;">No violations found</p>';
-        }
-    } catch (error) {
-        console.error('Error loading violations:', error);
-        const violationsList = document.getElementById('violationsList');
-        if (violationsList) {
-            violationsList.innerHTML = '<p style="text-align: center; padding: 20px; color: #dc2626;">Error loading violations</p>';
-        }
+                ${v.has_video
+                    ? `<button class="btn btn-ghost btn-sm" onclick="downloadVideo(${v.id})" title="Download clip">
+                           <i class="fas fa-download"></i> Video
+                       </button>`
+                    : `<button class="btn btn-ghost btn-sm" disabled title="Clip not saved — detection may have been stopped before recording finished" style="opacity:.4;cursor:not-allowed;">
+                           <i class="fas fa-video-slash"></i> No Clip
+                       </button>`
+                }
+            </div>`;
+        }).join('');
+    } catch (err) {
+        container.innerHTML = `<div class="empty-msg" style="padding:40px;color:#ef4444;">Error: ${err.message}</div>`;
     }
 }
 
-// Forgot Password Functions
-function showForgotPasswordModal() {
-    document.getElementById('forgotPasswordModal').style.display = 'flex';
-}
-
-function closeForgotPasswordModal() {
-    document.getElementById('forgotPasswordModal').style.display = 'none';
-    document.getElementById('resetEmail').value = '';
-    document.getElementById('resetTokenDisplay').style.display = 'none';
-}
-
-async function requestPasswordReset() {
-    const email = document.getElementById('resetEmail').value.trim();
-    if (!email) {
-        alert('Please enter your email');
-        return;
-    }
-    
+async function downloadVideo(id) {
     try {
-        const response = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ email: email })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            // Show reset token (for testing - in production, this would be sent via email)
-            const tokenDisplay = document.getElementById('resetTokenDisplay');
-            tokenDisplay.innerHTML = `<strong>Reset Token:</strong> ${data.reset_token}<br><small>Use this token to reset your password. In production, this would be sent via email.</small>`;
-            tokenDisplay.style.display = 'block';
-            alert('Password reset token generated. Check the token below or your email.');
-        } else {
-            alert(data.detail || 'Failed to generate reset token');
-        }
-    } catch (error) {
-        console.error('Error requesting password reset:', error);
-        alert('Error requesting password reset. Please try again.');
+        const res = await api(`/api/violations/${id}/video`);
+        if (!res.ok) { toast('Video not found', 'error'); return; }
+        const blob = await res.blob();
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = `violation_${id}.mp4`;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        toast('Download failed: ' + err.message, 'error');
     }
 }
 
-// Users Management Functions
-async function showUsersView() {
-    document.getElementById('dashboard-view').style.display = 'none';
-    document.getElementById('camera-view').style.display = 'none';
-    document.getElementById('violations-view').style.display = 'none';
-    document.getElementById('users-view').style.display = 'block';
-    
-    // Reset active class
-    document.querySelectorAll('.nav-item a').forEach(el => el.classList.remove('active'));
-    
-    await loadUsers();
-}
+// ── Users view ────────────────────────────────────────────────────────────────
 
 async function loadUsers() {
+    const container = document.getElementById('usersList');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-msg"><span class="spinner dark"></span> Loading…</div>';
     try {
-        const response = await apiRequest('/api/admin/users');
-        const data = await response.json();
-        
-        const usersList = document.getElementById('usersList');
-        if (!usersList) return;
-        
-        if (data.users && data.users.length > 0) {
-            usersList.innerHTML = data.users.map(user => `
-                <div class="user-item" style="display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #e5e7eb;">
-                    <div>
-                        <h4>${user.full_name}</h4>
-                        <p style="color: #6b7280; font-size: 14px;">${user.email}</p>
-                        <p style="color: #9ca3af; font-size: 12px;">
-                            ${user.last_login ? `Last login: ${new Date(user.last_login).toLocaleString()}` : 'Never logged in'}
-                        </p>
-                    </div>
-                    <button onclick="removeAdmin(${user.id})" class="btn-remove" style="background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
-                        Remove
-                    </button>
-                </div>
-            `).join('');
-        } else {
-            usersList.innerHTML = '<p style="text-align: center; padding: 20px; color: #6b7280;">No users found</p>';
+        const res   = await api('/api/admin/users');
+        const data  = await res.json();
+        const users = data.users || [];
+        const me    = getUser();
+        if (!users.length) {
+            container.innerHTML = '<div class="empty-msg" style="padding:30px;">No users found</div>';
+            return;
         }
-    } catch (error) {
-        console.error('Error loading users:', error);
-        alert('Error loading users. Please try again.');
+        container.innerHTML = users.map(u => {
+            const isMe       = me && u.id === me.id;
+            const isGoogle   = u.auth_provider === 'google';
+            const isInactive = !u.is_active;
+            const providerBadge = isGoogle
+                ? `<span class="provider-badge google"><i class="fab fa-google"></i> Google</span>`
+                : `<span class="provider-badge local"><i class="fas fa-lock"></i> Email</span>`;
+            const youBadge = isMe ? `<span class="you-badge">You</span>` : '';
+            const lastLogin = u.last_login
+                ? 'Last login: ' + new Date(u.last_login).toLocaleString()
+                : 'Never logged in';
+            const toggleBtn = !isMe ? `
+                <button onclick="toggleUserActive(${u.id}, ${u.is_active})"
+                    class="btn btn-sm ${isInactive ? 'btn-success' : 'btn-warning'}"
+                    title="${isInactive ? 'Activate' : 'Deactivate'} account">
+                    <i class="fas fa-${isInactive ? 'check' : 'ban'}"></i> ${isInactive ? 'Activate' : 'Deactivate'}
+                </button>` : '';
+            const removeBtn = !isMe ? `
+                <button onclick="removeAdmin(${u.id})" class="btn btn-danger btn-sm" title="Permanently delete">
+                    <i class="fas fa-trash-alt"></i>
+                </button>` : '';
+            return `
+            <div class="user-row ${isInactive ? 'user-inactive' : ''}">
+                <div class="user-avatar-sm" style="${isInactive ? 'opacity:.4;' : ''}">
+                    <i class="fas ${isGoogle ? 'fa-google' : 'fa-user'}"></i>
+                </div>
+                <div class="user-details">
+                    <span class="user-full-name">${u.full_name} ${youBadge} ${isInactive ? '<span class="inactive-badge">Inactive</span>' : ''}</span>
+                    <span class="user-email">${u.email}</span>
+                    <span class="user-meta">${lastLogin}</span>
+                </div>
+                ${providerBadge}
+                <span class="role-badge">${u.role || 'admin'}</span>
+                <div class="user-actions">${toggleBtn}${removeBtn}</div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        container.innerHTML = `<div class="empty-msg" style="padding:30px;color:#ef4444;">${err.message}</div>`;
+    }
+}
+
+async function toggleUserActive(userId, currentlyActive) {
+    const action = currentlyActive ? 'deactivate' : 'activate';
+    if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} this user?`)) return;
+    try {
+        const res  = await api(`/api/admin/users/${userId}/toggle`, { method: 'PATCH' });
+        const data = await res.json();
+        if (res.ok) {
+            toast(`User ${data.is_active ? 'activated' : 'deactivated'}`, data.is_active ? 'success' : 'warning');
+            loadUsers();
+        } else {
+            toast(data.detail || 'Failed', 'error');
+        }
+    } catch {
+        toast('Request failed', 'error');
     }
 }
 
 async function addAdmin() {
-    const email = document.getElementById('newAdminEmail')?.value.trim();
-    const password = document.getElementById('newAdminPassword')?.value;
-    const fullName = document.getElementById('newAdminName')?.value.trim();
-    
-    if (!email || !password || !fullName) {
-        alert('Please fill in all fields');
-        return;
+    const name  = document.getElementById('newName').value.trim();
+    const email = document.getElementById('newEmail').value.trim();
+    const msgEl = document.getElementById('addUserMsg');
+    const btn   = document.getElementById('addAdminBtn');
+
+    msgEl.style.display = 'none';
+    if (!name || !email) {
+        msgEl.className = 'alert alert-danger'; msgEl.textContent = 'Name and email are required.'; msgEl.style.display = 'block'; return;
     }
-    
-    if (password.length < 6) {
-        alert('Password must be at least 6 characters long');
-        return;
-    }
-    
+
+    btn.disabled = true;
     try {
-        const response = await apiRequest('/api/admin/users', {
-            method: 'POST',
-            body: JSON.stringify({
-                email: email,
-                password: password,
-                full_name: fullName
-            })
-        });
-        
-        if (response.ok) {
-            alert('Admin added successfully!');
-            document.getElementById('newAdminEmail').value = '';
-            document.getElementById('newAdminPassword').value = '';
-            document.getElementById('newAdminName').value = '';
+        const res  = await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email, full_name: name }) });
+        const data = await res.json();
+        if (res.ok) {
+            const sentMsg = data.email_sent
+                ? `Invitation sent to <strong>${email}</strong>. They must click the link in their email to activate.`
+                : `Email not configured — share this invite link manually:<br><a href="${data.invite_link}" target="_blank" style="word-break:break-all;font-size:12px;">${data.invite_link}</a>`;
+            msgEl.className = 'alert alert-success'; msgEl.innerHTML = sentMsg; msgEl.style.display = 'block';
+            document.getElementById('newName').value  = '';
+            document.getElementById('newEmail').value = '';
             await loadUsers();
         } else {
-            const data = await response.json();
-            alert(data.detail || 'Failed to add admin');
+            msgEl.className = 'alert alert-danger'; msgEl.textContent = data.detail || 'Failed to invite.'; msgEl.style.display = 'block';
         }
-    } catch (error) {
-        console.error('Error adding admin:', error);
-        alert('Error adding admin. Please try again.');
+    } catch (err) {
+        msgEl.className = 'alert alert-danger'; msgEl.textContent = err.message; msgEl.style.display = 'block';
+    } finally {
+        btn.disabled = false;
     }
 }
 
 async function removeAdmin(userId) {
-    if (!confirm('Are you sure you want to remove this admin? They will no longer be able to login.')) {
-        return;
-    }
-    
+    if (!confirm('Remove this admin? They will no longer be able to log in.')) return;
     try {
-        const response = await apiRequest(`/api/admin/users/${userId}`, {
-            method: 'DELETE'
-        });
-        
-        if (response.ok) {
-            alert('Admin removed successfully!');
-            await loadUsers();
+        const res  = await api(`/api/admin/users/${userId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok) {
+            toast('Admin removed', 'success');
+            loadUsers();
         } else {
-            const data = await response.json();
-            alert(data.detail || 'Failed to remove admin');
+            toast(data.detail || 'Failed to remove admin', 'error');
         }
-    } catch (error) {
-        console.error('Error removing admin:', error);
-        alert('Error removing admin. Please try again.');
-    }
-}
-
-// Original loadViolations function (if it exists)
-async function loadViolationsOriginal() {
-    const period = document.getElementById('violationPeriod')?.value || 'all';
-    const cameraId = document.getElementById('violationCamera')?.value === 'all' ? null : 
-                     parseInt(document.getElementById('violationCamera')?.value);
-    
-    let startDate = null;
-    let endDate = null;
-    
-    if (period === 'today') {
-        startDate = new Date().toISOString().split('T')[0];
-    } else if (period === 'week') {
-        const weekAgo = new Date();
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        startDate = weekAgo.toISOString().split('T')[0];
-    } else if (period === 'month') {
-        const monthAgo = new Date();
-        monthAgo.setMonth(monthAgo.getMonth() - 1);
-        startDate = monthAgo.toISOString().split('T')[0];
-    }
-    
-    try {
-        let url = `${API_BASE_URL}/api/violations?limit=100`;
-        if (startDate) url += `&start_date=${startDate}`;
-        if (cameraId) url += `&camera_id=${cameraId}`;
-        
-        const response = await apiRequest(url.replace(API_BASE_URL, ''));
-        const data = await response.json();
-        
-        displayViolations(data.violations);
-    } catch (error) {
-        console.error('Error loading violations:', error);
-        document.getElementById('violationsList').innerHTML = 
-            '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading violations</div>';
-    }
-}
-
-function displayViolations(violations) {
-    const container = document.getElementById('violationsList');
-    
-    if (violations.length === 0) {
-        container.innerHTML = '<div style="text-align: center; padding: 40px;">No violations found</div>';
-        return;
-    }
-    
-    container.innerHTML = violations.map(v => `
-        <div class="violation-item">
-            <div class="violation-info">
-                <h4>${v.detection_class} - ${(v.confidence * 100).toFixed(1)}%</h4>
-                <p>Camera ${v.camera_id} • ${new Date(v.timestamp).toLocaleString()}</p>
-                ${v.location ? `<p>Location: ${v.location}</p>` : ''}
-            </div>
-            <button onclick="downloadViolationVideo(${v.id})" class="btn-download">Download Video</button>
-        </div>
-    `).join('');
-}
-
-// Download violation video with authentication
-async function downloadViolationVideo(violationId) {
-    try {
-        const token = getAuthToken();
-        if (!token) {
-            alert('Please login to download videos');
-            showLoginPage();
-            return;
-        }
-        
-        // Fetch video with authentication
-        const response = await apiRequest(`/api/violations/${violationId}/video`);
-        
-        if (!response.ok) {
-            if (response.status === 401) {
-                alert('Session expired. Please login again.');
-                removeAuthToken();
-                showLoginPage();
-                return;
-            }
-            throw new Error('Failed to download video');
-        }
-        
-        // Get video blob
-        const blob = await response.blob();
-        
-        // Create download link
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `violation_${violationId}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-    } catch (error) {
-        console.error('Error downloading video:', error);
-        alert('Failed to download video. Please try again.');
+    } catch (err) {
+        toast(err.message, 'error');
     }
 }
