@@ -234,6 +234,11 @@ async def list_users(current_user: dict = Depends(get_current_user)):
 
 @app.post("/api/admin/users")
 async def add_admin(req: AddAdminRequest, request: Request, current_user: dict = Depends(get_current_user)):
+    try:
+        from email_validator import validate_email, EmailNotValidError
+        validate_email(req.email, check_deliverability=True)
+    except Exception as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid email address: {e}")
     if await db.get_user_by_email(req.email):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered")
     user_id     = await db.create_user(req.email, "", req.full_name, "admin", "local", is_active=False, email_verified=False)
