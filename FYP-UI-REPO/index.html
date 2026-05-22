@@ -178,6 +178,28 @@
                     </button>
                 </div>
 
+                <!-- ── Filter Bar ── -->
+                <div class="filter-bar">
+                    <div class="filter-group">
+                        <span class="filter-label"><i class="fas fa-calendar-alt"></i> Period</span>
+                        <div class="filter-pills segmented" id="periodFilter">
+                            <button class="filter-pill active" data-val="all"   onclick="setFilter('period','all')">All Time</button>
+                            <button class="filter-pill"        data-val="today" onclick="setFilter('period','today')">Today</button>
+                            <button class="filter-pill"        data-val="week"  onclick="setFilter('period','week')">This Week</button>
+                            <button class="filter-pill"        data-val="month" onclick="setFilter('period','month')">This Month</button>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label"><i class="fas fa-layer-group"></i> Type</span>
+                        <div class="filter-pills tags" id="vtypeFilter">
+                            <button class="filter-pill tag active"      data-val="all"      onclick="setFilter('vtype','all')">All Types</button>
+                            <button class="filter-pill tag smoking-pill" data-val="smoking"  onclick="setFilter('vtype','smoking')"><i class="fas fa-smoking"></i> Smoking</button>
+                            <button class="filter-pill tag fire-pill"    data-val="fire"     onclick="setFilter('vtype','fire')"><i class="fas fa-fire"></i> Fire</button>
+                            <button class="filter-pill tag fight-pill"   data-val="fighting" onclick="setFilter('vtype','fighting')"><i class="fas fa-fist-raised"></i> Fighting</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="stats-grid">
                     <div class="stat-card blue">
                         <div class="stat-icon"><i class="fas fa-shield-alt"></i></div>
@@ -186,69 +208,79 @@
                             <span class="stat-value" id="statTotal">—</span>
                         </div>
                     </div>
-                    <div class="stat-card red">
-                        <div class="stat-icon"><i class="fas fa-bolt"></i></div>
-                        <div class="stat-body">
-                            <span class="stat-label">High Priority</span>
-                            <span class="stat-value" id="statHigh">—</span>
-                        </div>
-                    </div>
-                    <div class="stat-card yellow">
-                        <div class="stat-icon"><i class="fas fa-exclamation-circle"></i></div>
-                        <div class="stat-body">
-                            <span class="stat-label">Medium Priority</span>
-                            <span class="stat-value" id="statMedium">—</span>
-                        </div>
-                    </div>
                     <div class="stat-card orange">
-                        <div class="stat-icon"><i class="fas fa-info-circle"></i></div>
+                        <div class="stat-icon"><i class="fas fa-smoking"></i></div>
                         <div class="stat-body">
-                            <span class="stat-label">Low Priority</span>
-                            <span class="stat-value" id="statLow">—</span>
+                            <span class="stat-label">Total Smoking</span>
+                            <span class="stat-value" id="statSmokingToday">—</span>
+                        </div>
+                    </div>
+                    <div class="stat-card red">
+                        <div class="stat-icon"><i class="fas fa-fire"></i></div>
+                        <div class="stat-body">
+                            <span class="stat-label">Total Fire</span>
+                            <span class="stat-value" id="statFireToday">—</span>
+                        </div>
+                    </div>
+                    <div class="stat-card violet">
+                        <div class="stat-icon"><i class="fas fa-fist-raised"></i></div>
+                        <div class="stat-body">
+                            <span class="stat-label">Total Fighting</span>
+                            <span class="stat-value" id="statFightingToday">—</span>
                         </div>
                     </div>
                     <div class="stat-card teal">
+                        <div class="stat-icon"><i class="fas fa-calendar-week"></i></div>
+                        <div class="stat-body">
+                            <span class="stat-label">This Week</span>
+                            <span class="stat-value" id="statWeek">—</span>
+                        </div>
+                    </div>
+                    <div class="stat-card purple">
                         <div class="stat-icon"><i class="fas fa-calendar-day"></i></div>
                         <div class="stat-body">
-                            <span class="stat-label">Today</span>
+                            <span class="stat-label">Today Total</span>
                             <span class="stat-value" id="statToday">—</span>
                         </div>
                     </div>
                 </div>
 
+                <!-- Row 1: Last 7 Days stacked + Type donut -->
                 <div class="charts-row">
-                    <div class="card">
+                    <div class="card" style="flex:2;">
                         <div class="card-head">
                             <div>
-                                <div class="card-title">Last 7 Months</div>
-                                <div class="card-sub">Violations per month</div>
+                                <div class="card-title">Last 7 Days</div>
+                                <div class="card-sub">Violations per day by type</div>
                             </div>
-                            <select class="select-sm" id="monthsFilter" onchange="reloadCharts()">
-                                <option value="__all__">All Types</option>
-                            </select>
                         </div>
-                        <div class="chart-box"><canvas id="chartMonths"></canvas></div>
+                        <div class="chart-box"><canvas id="chartWeekly"></canvas></div>
                     </div>
-                    <div class="card">
+                    <div class="card" style="flex:1;min-width:220px;">
                         <div class="card-head">
-                            <div>
-                                <div class="card-title">Last 7 Weeks</div>
-                                <div class="card-sub">Violations per week</div>
-                            </div>
-                            <select class="select-sm" id="weeksFilter" onchange="reloadCharts()">
-                                <option value="__all__">All Types</option>
-                            </select>
+                            <div class="card-title">Violations by Type</div>
+                            <div class="card-sub">All time</div>
                         </div>
-                        <div class="chart-box"><canvas id="chartWeeks"></canvas></div>
+                        <div class="chart-box" style="height:180px;"><canvas id="chartType"></canvas></div>
+                        <div id="typeBreakdown" class="type-breakdown"></div>
                     </div>
                 </div>
 
-                <div class="charts-row single">
-                    <div class="card">
+                <!-- Row 2: 30-Day Trend + Today by Hour -->
+                <div class="charts-row">
+                    <div class="card" style="flex:1;">
                         <div class="card-head">
-                            <div class="card-title">24-Hour Summary</div>
+                            <div class="card-title">30-Day Trend</div>
+                            <div class="card-sub">Daily violation count</div>
                         </div>
-                        <div class="chart-box"><canvas id="chartSummary"></canvas></div>
+                        <div class="chart-box"><canvas id="chartTrend"></canvas></div>
+                    </div>
+                    <div class="card" style="flex:1;">
+                        <div class="card-head">
+                            <div class="card-title">Today by Hour</div>
+                            <div class="card-sub">When violations happen</div>
+                        </div>
+                        <div class="chart-box"><canvas id="chartHourly"></canvas></div>
                     </div>
                 </div>
 
@@ -271,12 +303,22 @@
             <!-- ── CAMERA VIEW ── -->
             <div id="camera-view" class="view" style="display:none;">
                 <div class="page-header">
-                    <h1 id="cameraTitle">Live Camera</h1>
-                    <div class="camera-switcher">
-                        <button class="cam-btn active" onclick="switchCamera(1)">Cam 1</button>
-                        <button class="cam-btn" onclick="switchCamera(2)">Cam 2</button>
-                        <button class="cam-btn" onclick="switchCamera(3)">Cam 3</button>
-                    </div>
+                    <h1>Camera 01 — Live Feed</h1>
+                </div>
+
+                <!-- Detection mode selector -->
+                <div class="mode-selector-bar">
+                    <span class="mode-label">Detection Mode:</span>
+                    <button id="modeBtnSmoking" class="mode-btn active" onclick="setDetectionMode('smoking')">
+                        <i class="fas fa-smoking"></i> Smoking Detection
+                    </button>
+                    <button id="modeBtnFire" class="mode-btn" onclick="setDetectionMode('fire')">
+                        <i class="fas fa-fire"></i> Fire Detection
+                    </button>
+                    <button id="modeBtnFighting" class="mode-btn" onclick="setDetectionMode('fighting')">
+                        <i class="fas fa-fist-raised"></i> Fight Detection
+                    </button>
+                    <span id="modeActiveLabel" class="mode-active-label smoking">Smoking Mode Active</span>
                 </div>
 
                 <div class="card camera-card">
@@ -287,13 +329,13 @@
                         </div>
                         <div class="stream-placeholder" id="streamPlaceholder">
                             <i class="fas fa-video-slash"></i>
-                            <p>Start detection to view the live feed</p>
+                            <p>Select a detection mode and start detection</p>
                         </div>
                     </div>
                     <div class="camera-controls">
                         <div class="cam-info">
                             <span class="label">Camera</span>
-                            <span id="camName">—</span>
+                            <span id="camName">Camera 01</span>
                             &nbsp;&nbsp;
                             <span class="label">Status</span>
                             <span id="camDetectionStatus" class="status-dot">Inactive</span>
@@ -304,7 +346,7 @@
                     </div>
                 </div>
 
-                <!-- Violation alert feed -->
+                <!-- Live alert feed -->
                 <div class="card" style="margin-top:16px;">
                     <div class="card-title" style="margin-bottom:12px;">
                         <i class="fas fa-bell" style="color:#ef4444;"></i> Live Alerts
@@ -335,12 +377,11 @@
                         </select>
                     </div>
                     <div class="filter-group">
-                        <label>Camera</label>
-                        <select id="violationCamera" class="form-input select-filter" onchange="loadViolations()">
-                            <option value="all">All Cameras</option>
-                            <option value="1">Camera 01</option>
-                            <option value="2">Camera 02</option>
-                            <option value="3">Camera 03</option>
+                        <label>Violation Type</label>
+                        <select id="violationTypeFilter" class="form-input select-filter" onchange="loadViolations()">
+                            <option value="all">All Types</option>
+                            <option value="smoking">Smoking</option>
+                            <option value="fire">Fire</option>
                         </select>
                     </div>
                 </div>

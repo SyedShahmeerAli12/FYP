@@ -56,6 +56,7 @@ class Database:
                 )
             """)
             await conn.execute("ALTER TABLE violations ADD COLUMN IF NOT EXISTS priority VARCHAR(20)")
+            await conn.execute("ALTER TABLE violations ADD COLUMN IF NOT EXISTS violation_type VARCHAR(20) DEFAULT 'smoking'")
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_violations_timestamp ON violations(timestamp DESC)
             """)
@@ -141,6 +142,7 @@ class Database:
         camera_id: Optional[int] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        violation_type: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict]:
         pool = await self.get_pool()
@@ -149,10 +151,18 @@ class Database:
             if camera_id:
                 n += 1; q += f" AND camera_id = ${n}"; params.append(camera_id)
             if start_date:
-                n += 1; q += f" AND timestamp >= ${n}::timestamp"; params.append(start_date)
+                from datetime import date as _date
+                if isinstance(start_date, str):
+                    start_date = _date.fromisoformat(start_date)
+                n += 1; q += f" AND timestamp >= ${n}"; params.append(start_date)
             if end_date:
-                n += 1; q += f" AND timestamp <= ${n}::timestamp"; params.append(end_date)
-            q += f" ORDER BY timestamp DESC LIMIT ${n+1}"; params.append(limit)
+                from datetime import date as _date
+                if isinstance(end_date, str):
+                    end_date = _date.fromisoformat(end_date)
+                n += 1; q += f" AND timestamp <= ${n}"; params.append(end_date)
+            if violation_type:
+                n += 1; q += f" AND COALESCE(violation_type, CASE WHEN detection_class ILIKE '%fire%' THEN 'fire' ELSE 'smoking' END) = ${n}"; params.append(violation_type)
+            q += f" ORDER BY id DESC LIMIT ${n+1}"; params.append(limit)
             rows = await conn.fetch(q, *params)
             return [self._violation_dict(r) for r in rows]
 
@@ -164,6 +174,10 @@ class Database:
 
     def _violation_dict(self, row) -> Dict:
         conf = float(row["confidence"])
+        keys = row.keys() if hasattr(row, "keys") else []
+        vtype = row["violation_type"] if "violation_type" in keys else (
+            "fire" if "fire" in str(row["detection_class"]).lower() else "smoking"
+        )
         return {
             "id": row["id"], "camera_id": row["camera_id"],
             "detection_class": row["detection_class"], "confidence": conf,
@@ -173,6 +187,8 @@ class Database:
             "frame_count": row["frame_count"],
             "bbox_data": row["bbox_data"] if row["bbox_data"] else {},
             "created_at": row["created_at"].isoformat(),
+            "violation_type": vtype,
+            "location": row["location"] if "location" in keys else None,
         }
 
     async def get_violation_stats(
@@ -313,72 +329,94 @@ class Database:
 
     # ── Dashboard ───────────────────────────────────────────────────────
 
-    async def get_dashboard_stats(self) -> Dict:
-        pool = await self.get_pool()
+    @staticmethod
+    def _period_clause(period: str) -> str:
+        return {
+            'today': "DATE(timestamp) = CURRENT_DATE",
+            'week':  "timestamp >= DATE_TRUNC('week',  CURRENT_TIMESTAMP)",
+            'month': "timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)",
+        }.get(period, "1=1")
+
+    @staticmethod
+    def _vtype_expr() -> str:
+        return "COALESCE(violation_type, CASE WHEN detection_class ILIKE '%fire%' THEN 'fire' WHEN detection_class ILIKE '%fight%' THEN 'fighting' ELSE 'smoking' END)"
+
+    async def get_dashboard_stats(self, period: str = 'all', vtype: str = 'all') -> Dict:
+        pool   = await self.get_pool()
+        pc     = self._period_clause(period)
+        ve     = self._vtype_expr()
+        vc     = f"{ve} = '{vtype}'" if vtype not in ('all', None) else "1=1"
+        where  = f"WHERE {pc} AND {vc}"
+
         async with pool.acquire() as conn:
-            # All counts in a single round-trip
-            counts = await conn.fetchrow("""
+            counts = await conn.fetchrow(f"""
                 SELECT
                     COUNT(*) as total,
+                    COUNT(*) FILTER (WHERE {ve} = 'smoking') as smoking_total,
+                    COUNT(*) FILTER (WHERE {ve} = 'fire')     as fire_total,
+                    COUNT(*) FILTER (WHERE {ve} = 'fighting') as fighting_total,
                     COUNT(*) FILTER (WHERE DATE(timestamp) = CURRENT_DATE) as today,
                     COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('week',  CURRENT_TIMESTAMP)) as week,
-                    COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)) as month,
-                    COUNT(*) FILTER (WHERE COALESCE(priority,
-                        CASE WHEN confidence>=0.85 THEN 'high' WHEN confidence>=0.70 THEN 'medium' ELSE 'low' END
-                    ) = 'high') as high_priority,
-                    COUNT(*) FILTER (WHERE COALESCE(priority,
-                        CASE WHEN confidence>=0.85 THEN 'high' WHEN confidence>=0.70 THEN 'medium' ELSE 'low' END
-                    ) = 'medium') as medium_priority,
-                    COUNT(*) FILTER (WHERE COALESCE(priority,
-                        CASE WHEN confidence>=0.85 THEN 'high' WHEN confidence>=0.70 THEN 'medium' ELSE 'low' END
-                    ) = 'low') as low_priority
-                FROM violations
+                    COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)) as month
+                FROM violations {where}
             """)
 
-            top_class = await conn.fetchrow("""
-                SELECT detection_class, COUNT(*) as count
-                FROM violations GROUP BY detection_class ORDER BY count DESC LIMIT 1
-            """)
-            top_violations = await conn.fetch("""
+            top_violations = await conn.fetch(f"""
                 SELECT DATE(timestamp) as violation_date, COUNT(*) as count
-                FROM violations GROUP BY DATE(timestamp) ORDER BY violation_date DESC LIMIT 7
+                FROM violations {where}
+                GROUP BY DATE(timestamp) ORDER BY violation_date DESC LIMIT 7
             """)
-            top_outlets = await conn.fetch("""
+            top_outlets = await conn.fetch(f"""
                 SELECT COALESCE(location,'Unknown') as location, COUNT(*) as count
-                FROM violations GROUP BY location ORDER BY count DESC LIMIT 7
-            """)
-            detection_classes = await conn.fetch("""
-                SELECT DISTINCT detection_class FROM violations
-                WHERE detection_class IS NOT NULL ORDER BY detection_class
-            """)
-            hourly = await conn.fetch("""
-                SELECT DATE_TRUNC('hour', timestamp) as hour, COUNT(*) as count
-                FROM violations WHERE timestamp >= NOW() - INTERVAL '24 hours'
-                GROUP BY DATE_TRUNC('hour', timestamp) ORDER BY hour ASC
+                FROM violations {where}
+                GROUP BY location ORDER BY count DESC LIMIT 7
             """)
 
         return {
-            "total_violations":   counts["total"]  or 0,
-            "today_violations":   counts["today"]  or 0,
-            "week_violations":    counts["week"]   or 0,
-            "month_violations":   counts["month"]  or 0,
-            "high_priority":      counts["high_priority"]   or 0,
-            "medium_priority":    counts["medium_priority"] or 0,
-            "low_priority":       counts["low_priority"]    or 0,
-            "top_violation": {
-                "class": top_class["detection_class"] if top_class else "No Data",
-                "count": top_class["count"] if top_class else 0,
-            },
+            "total_violations": counts["total"]          or 0,
+            "today_violations": counts["today"]          or 0,
+            "week_violations":  counts["week"]           or 0,
+            "month_violations": counts["month"]          or 0,
+            "smoking_total":    counts["smoking_total"]  or 0,
+            "fire_total":       counts["fire_total"]     or 0,
+            "fighting_total":   counts["fighting_total"] or 0,
             "top_violations": [
                 {"date": r["violation_date"].isoformat() if hasattr(r["violation_date"], 'isoformat') else str(r["violation_date"]),
                  "count": r["count"]}
                 for r in top_violations
             ],
-            "detection_classes": [r["detection_class"] for r in detection_classes],
             "top_outlets": [{"location": r["location"], "count": r["count"]} for r in top_outlets],
-            "hourly_summary": [
-                {"hour": r["hour"].isoformat() if hasattr(r["hour"], 'isoformat') else str(r["hour"]),
-                 "count": r["count"]}
-                for r in hourly
-            ],
+        }
+
+    async def get_chart_data(self, period: str = 'all', vtype: str = 'all') -> Dict:
+        pool  = await self.get_pool()
+        pc    = self._period_clause(period)
+        ve    = self._vtype_expr()
+        vc    = f"{ve} = '{vtype}'" if vtype not in ('all', None) else "1=1"
+        where = f"WHERE {pc} AND {vc}"
+
+        async with pool.acquire() as conn:
+            weekly = await conn.fetch(f"""
+                SELECT DATE(timestamp) as day, {ve} as vtype, COUNT(*) as count
+                FROM violations
+                WHERE timestamp >= CURRENT_DATE - INTERVAL '6 days' AND {vc}
+                GROUP BY day, vtype ORDER BY day ASC
+            """)
+            monthly = await conn.fetch(f"""
+                SELECT DATE(timestamp) as day, COUNT(*) as count
+                FROM violations
+                WHERE timestamp >= CURRENT_DATE - INTERVAL '29 days' AND {vc}
+                GROUP BY day ORDER BY day ASC
+            """)
+            hourly = await conn.fetch(f"""
+                SELECT EXTRACT(HOUR FROM timestamp)::int as hour, COUNT(*) as count
+                FROM violations
+                WHERE DATE(timestamp) = CURRENT_DATE AND {vc}
+                GROUP BY hour ORDER BY hour ASC
+            """)
+
+        return {
+            "weekly":  [{"day": str(r["day"]), "type": r["vtype"], "count": r["count"]} for r in weekly],
+            "monthly": [{"day": str(r["day"]), "count": r["count"]} for r in monthly],
+            "hourly":  [{"hour": r["hour"], "count": r["count"]} for r in hourly],
         }

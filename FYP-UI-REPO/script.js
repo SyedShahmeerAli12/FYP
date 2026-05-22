@@ -369,13 +369,29 @@ function toggleDropdown() {
 
 let chartMonths, chartWeeks, chartSummary;
 
+// ── Active filters ────────────────────────────────────────────────────────────
+const activeFilters = { period: 'all', vtype: 'all' };
+
+function setFilter(key, val) {
+    activeFilters[key] = val;
+    // Update pill active state
+    const containerId = key === 'period' ? 'periodFilter' : 'vtypeFilter';
+    document.querySelectorAll(`#${containerId} [data-val]`)
+        .forEach(btn => btn.classList.toggle('active', btn.dataset.val === val));
+    refreshDashboard();
+}
+
+function _filterQS() {
+    return `?period=${activeFilters.period}&vtype=${activeFilters.vtype}`;
+}
+
 async function refreshDashboard() {
+    const qs = _filterQS();
     try {
-        const res   = await api('/api/dashboard/stats');
+        const res   = await api(`/api/dashboard/stats${qs}`);
         const stats = await res.json();
         renderKPIs(stats);
-        populateFilters(stats.detection_classes || []);
-        await renderCharts(stats);
+        await renderCharts(stats, qs);
         renderOutlets(stats.top_outlets || []);
         renderRecentDates(stats.top_violations || []);
     } catch (err) {
@@ -385,96 +401,135 @@ async function refreshDashboard() {
 
 function renderKPIs(s) {
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? '—'; };
-    set('statTotal',  s.total_violations);
-    set('statHigh',   s.high_priority);
-    set('statMedium', s.medium_priority);
-    set('statLow',    s.low_priority);
-    set('statToday',  s.today_violations);
+    set('statTotal',          s.total_violations);
+    set('statSmokingToday',   s.smoking_total   ?? 0);
+    set('statFireToday',      s.fire_total      ?? 0);
+    set('statFightingToday',  s.fighting_total  ?? 0);
+    set('statWeek',           s.week_violations);
+    set('statToday',          s.today_violations);
 }
 
-function populateFilters(classes) {
-    ['monthsFilter', 'weeksFilter'].forEach(id => {
-        const sel = document.getElementById(id);
-        if (!sel) return;
-        const cur = sel.value;
-        sel.innerHTML = '<option value="__all__">All Types</option>';
-        classes.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
-        if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-    });
-}
+function populateFilters() {}
 
-async function reloadCharts() {
-    const cls = (() => {
-        const m = document.getElementById('monthsFilter')?.value;
-        return m && m !== '__all__' ? m : null;
-    })();
-    const qs = cls ? `&detection_class=${encodeURIComponent(cls)}` : '';
+let chartWeekly = null, chartType = null, chartTrend = null, chartHourly = null;
+
+async function renderCharts(stats, qs = '') {
+    buildChartType(stats.smoking_total ?? 0, stats.fire_total ?? 0, stats.fighting_total ?? 0);
     try {
-        const [mRes, wRes] = await Promise.all([
-            api(`/api/violations/stats?period=month${qs}`),
-            api(`/api/violations/stats?period=week${qs}`),
-        ]);
-        const [mData, wData] = await Promise.all([mRes.json(), wRes.json()]);
-        buildChartMonths(mData.stats || []);
-        buildChartWeeks(wData.stats  || []);
-    } catch {}
-}
-
-async function renderCharts(stats) {
-    await reloadCharts();
-    buildChartSummary(stats.hourly_summary || []);
-}
-
-function buildChartMonths(data) {
-    const ctx = document.getElementById('chartMonths');
-    if (!ctx) return;
-    if (chartMonths) chartMonths.destroy();
-    chartMonths = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: data.map(d => d.period).reverse(),
-            datasets: [{ label: 'Violations', data: data.map(d => d.count).reverse(), backgroundColor: '#6d28d9', borderRadius: 4, barThickness: 40 }],
-        },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } },
-    });
-}
-
-function buildChartWeeks(data) {
-    const ctx = document.getElementById('chartWeeks');
-    if (!ctx) return;
-    if (chartWeeks) chartWeeks.destroy();
-    chartWeeks = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: data.map(d => d.period).reverse(),
-            datasets: [{ label: 'Violations', data: data.map(d => d.count).reverse(), backgroundColor: '#0ea5e9', borderRadius: 4, barThickness: 40 }],
-        },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } },
-    });
-}
-
-function buildChartSummary(data) {
-    const ctx = document.getElementById('chartSummary');
-    if (!ctx) return;
-    if (chartSummary) chartSummary.destroy();
-    const now = new Date();
-    let labels = [], values = [];
-    if (data.length > 0) {
-        labels = data.map(d => { try { return new Date(d.hour).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch { return d.hour; } });
-        values = data.map(d => d.count || 0);
-    } else {
-        for (let i = 23; i >= 0; i--) {
-            labels.push(new Date(now - i * 3600000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }));
-            values.push(0);
-        }
+        const res  = await api(`/api/dashboard/charts${qs}`);
+        const data = await res.json();
+        buildChartWeekly(data.weekly  || []);
+        buildChartTrend(data.monthly  || []);
+        buildChartHourly(data.hourly  || []);
+    } catch (e) {
+        console.error('chart data error', e);
     }
-    chartSummary = new Chart(ctx, {
+}
+
+// ── Last 7 Days stacked bar ───────────────────────────────────────────────────
+function buildChartWeekly(data) {
+    const ctx = document.getElementById('chartWeekly');
+    if (!ctx) return;
+    if (chartWeekly) chartWeekly.destroy();
+
+    // Build last 7 day labels
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        days.push(d.toISOString().slice(0, 10));
+    }
+    const dayLabels = days.map(d => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }));
+
+    const counts = (type) => days.map(day => {
+        const row = data.find(r => r.day === day && r.type === type);
+        return row ? row.count : 0;
+    });
+
+    chartWeekly = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: dayLabels,
+            datasets: [
+                { label: 'Smoking',  data: counts('smoking'),  backgroundColor: '#f97316', borderRadius: 3 },
+                { label: 'Fire',     data: counts('fire'),     backgroundColor: '#ef4444', borderRadius: 3 },
+                { label: 'Fighting', data: counts('fighting'), backgroundColor: '#7c3aed', borderRadius: 3 },
+            ],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'top', labels: { font: { size: 11 }, padding: 10 } } },
+            scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } },
+        },
+    });
+}
+
+// ── Violations by Type donut ─────────────────────────────────────────────────
+function buildChartType(smokingTotal, fireTotal, fightingTotal) {
+    const ctx = document.getElementById('chartType');
+    if (!ctx) return;
+    if (chartType) chartType.destroy();
+    const total = smokingTotal + fireTotal + fightingTotal;
+    chartType = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Smoking', 'Fire', 'Fighting'],
+            datasets: [{ data: [smokingTotal, fireTotal, fightingTotal], backgroundColor: ['#f97316', '#ef4444', '#7c3aed'], borderWidth: 0, hoverOffset: 4 }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false, cutout: '70%',
+            plugins: {
+                legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 12 } },
+                tooltip: { callbacks: { label: c => ` ${c.label}: ${c.raw} (${total ? ((c.raw/total)*100).toFixed(0) : 0}%)` } },
+            },
+        },
+    });
+    const breakdown = document.getElementById('typeBreakdown');
+    if (breakdown) breakdown.innerHTML = `
+        <div class="type-row"><span class="type-dot smoking"></span><span>Smoking</span><strong>${smokingTotal}</strong></div>
+        <div class="type-row"><span class="type-dot fire"></span><span>Fire</span><strong>${fireTotal}</strong></div>
+        <div class="type-row"><span class="type-dot fighting"></span><span>Fighting</span><strong>${fightingTotal}</strong></div>`;
+}
+
+// ── 30-Day Trend line ────────────────────────────────────────────────────────
+function buildChartTrend(data) {
+    const ctx = document.getElementById('chartTrend');
+    if (!ctx) return;
+    if (chartTrend) chartTrend.destroy();
+    const labels = data.map(d => new Date(d.day + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+    const values = data.map(d => d.count);
+    chartTrend = new Chart(ctx, {
         type: 'line',
         data: {
             labels,
-            datasets: [{ label: 'Violations', data: values, borderColor: '#6d28d9', backgroundColor: 'rgba(109,40,217,0.1)', tension: 0.4, fill: true, pointRadius: 3 }],
+            datasets: [{ label: 'Violations', data: values, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', tension: 0.4, fill: true, pointRadius: 3, pointHoverRadius: 5 }],
         },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false } } } },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } } },
+        },
+    });
+}
+
+// ── Today by Hour bar ────────────────────────────────────────────────────────
+function buildChartHourly(data) {
+    const ctx = document.getElementById('chartHourly');
+    if (!ctx) return;
+    if (chartHourly) chartHourly.destroy();
+    const hours  = Array.from({ length: 24 }, (_, i) => i);
+    const labels = hours.map(h => `${String(h).padStart(2,'0')}:00`);
+    const values = hours.map(h => { const r = data.find(d => d.hour === h); return r ? r.count : 0; });
+    chartHourly = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{ label: 'Violations', data: values, backgroundColor: values.map(v => v > 0 ? '#6d28d9' : '#e2e8f0'), borderRadius: 3 }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 12 } } },
+        },
     });
 }
 
@@ -499,39 +554,55 @@ function renderRecentDates(dates) {
 
 // ── Camera view ───────────────────────────────────────────────────────────────
 
-let currentCameraId = 1;
+const currentCameraId = 1;
 let ws = null;
 let detectionRunning = false;
+let currentMode = 'smoking';
 
 function initCameraView() {
-    switchCamera(currentCameraId);
-}
-
-async function switchCamera(id) {
-    currentCameraId = id;
-    document.querySelectorAll('.cam-btn').forEach((b, i) => b.classList.toggle('active', i + 1 === id));
-    document.getElementById('cameraTitle').textContent = `Live Camera — Cam ${id}`;
-    document.getElementById('camName').textContent = `Camera 0${id}`;
-
     const feed   = document.getElementById('liveVideoFeed');
     const badge  = document.getElementById('streamBadge');
     const holder = document.getElementById('streamPlaceholder');
-
     feed.src = '';
     badge.className = 'stream-badge offline';
     badge.innerHTML = '<i class="fas fa-circle"></i> OFFLINE';
     holder.style.display = 'flex';
-
-    connectWebSocket(id);
-
-    try {
-        const res  = await api(`/api/cameras/${id}/status`);
-        const data = await res.json();
+    connectWebSocket(currentCameraId);
+    api(`/api/cameras/${currentCameraId}/status`).then(r => r.json()).then(data => {
         detectionRunning = data.is_running;
+        currentMode = data.mode || 'smoking';
         updateDetectionBtn();
-        if (detectionRunning) startStream(id);
-    } catch (err) {
-        toast('Cannot reach server', 'error');
+        updateModeUI(currentMode);
+        if (detectionRunning) startStream(currentCameraId);
+    }).catch(() => {});
+}
+
+async function setDetectionMode(mode) {
+    currentMode = mode;
+    updateModeUI(mode);
+    try {
+        await api(`/api/cameras/${currentCameraId}/mode`, {
+            method: 'POST',
+            body: JSON.stringify({ mode }),
+        });
+        const label = mode === 'fire' ? 'Fire' : mode === 'fighting' ? 'Fight' : 'Smoking';
+        toast(`Switched to ${label} Detection`, 'info');
+    } catch {}
+}
+
+function updateModeUI(mode) {
+    const btnSmoke   = document.getElementById('modeBtnSmoking');
+    const btnFire    = document.getElementById('modeBtnFire');
+    const btnFight   = document.getElementById('modeBtnFighting');
+    const label      = document.getElementById('modeActiveLabel');
+    if (btnSmoke)  btnSmoke.classList.toggle('active',  mode === 'smoking');
+    if (btnFire)   btnFire.classList.toggle('active',   mode === 'fire');
+    if (btnFight)  btnFight.classList.toggle('active',  mode === 'fighting');
+    if (label) {
+        label.textContent = mode === 'fire' ? 'Fire Mode Active'
+                          : mode === 'fighting' ? 'Fight Mode Active'
+                          : 'Smoking Mode Active';
+        label.className   = `mode-active-label ${mode}`;
     }
 }
 
@@ -589,8 +660,14 @@ async function toggleDetection() {
             detectionRunning = !detectionRunning;
             updateDetectionBtn();
             if (detectionRunning) {
+                // Apply selected mode immediately after starting
+                await api(`/api/cameras/${currentCameraId}/mode`, {
+                    method: 'POST',
+                    body: JSON.stringify({ mode: currentMode }),
+                });
                 startStream(currentCameraId);
-                toast('Detection started', 'success');
+                const mLabel = currentMode === 'fire' ? 'Fire' : currentMode === 'fighting' ? 'Fight' : 'Smoking';
+                toast(`Detection started — ${mLabel} mode`, 'success');
             } else {
                 stopStream();
                 toast('Detection stopped', 'info');
@@ -612,11 +689,11 @@ function connectWebSocket(cameraId) {
     ws.onmessage = e => {
         const data = JSON.parse(e.data);
         if (data.type === 'violation_alert' || data.type === 'violation_detected') {
-            const msg = `🚨 Violation on Camera ${data.camera_id} — conf: ${(data.confidence * 100).toFixed(0)}%`;
+            const msg = `${data.detection_class} detected — conf: ${(data.confidence * 100).toFixed(0)}%`;
             toast(msg, 'violation', 8000);
             pushLiveAlert(data);
             if (window._currentView === 'violations') loadViolations();
-            if (window._currentView === 'dashboard')  refreshDashboard();
+            if (window._currentView === 'dashboard')  _debouncedDashboardRefresh();
         }
     };
     ws.onerror  = () => {};
@@ -624,6 +701,13 @@ function connectWebSocket(cameraId) {
 }
 
 function stopWebSocket() { if (ws) { ws.close(); ws = null; } }
+
+// Debounce dashboard refresh so rapid violations don't hammer the API
+let _dashRefreshTimer = null;
+function _debouncedDashboardRefresh() {
+    clearTimeout(_dashRefreshTimer);
+    _dashRefreshTimer = setTimeout(() => refreshDashboard(), 1500);
+}
 
 let alertCount = 0;
 function pushLiveAlert(data) {
@@ -636,7 +720,7 @@ function pushLiveAlert(data) {
     const row = document.createElement('div');
     row.className = 'alert-row';
     row.innerHTML = `
-        <span class="alert-dot"></span>
+        <span class="alert-dot ${data.violation_type || 'smoking'}"></span>
         <span class="alert-text">${data.detection_class || 'Violation'} — Cam ${data.camera_id}</span>
         <span class="alert-time">${ts}</span>
     `;
@@ -658,11 +742,11 @@ async function loadViolations() {
     if (!container) return;
     container.innerHTML = '<div class="loading-msg"><span class="spinner dark"></span> Loading…</div>';
 
-    const period   = document.getElementById('violationPeriod')?.value || 'all';
-    const cameraId = document.getElementById('violationCamera')?.value || 'all';
+    const period    = document.getElementById('violationPeriod')?.value || 'all';
+    const vTypeFilter = document.getElementById('violationTypeFilter')?.value || 'all';
 
     let url = '/api/violations?limit=100';
-    if (cameraId !== 'all') url += `&camera_id=${cameraId}`;
+    if (vTypeFilter !== 'all') url += `&violation_type=${vTypeFilter}`;
 
     const now = new Date();
     if (period === 'today') {
@@ -688,13 +772,15 @@ async function loadViolations() {
             const prio  = v.priority || 'low';
             const ts    = new Date(v.timestamp).toLocaleString();
             const conf  = (v.confidence * 100).toFixed(1);
+            const vtype = v.violation_type || (v.detection_class?.toLowerCase().includes('fire') ? 'fire' : 'smoking');
+            const typeLabel = vtype === 'fire' ? 'Fire' : vtype === 'fighting' ? 'Fighting' : 'Smoking';
             return `
             <div class="violation-row">
                 <div class="v-left">
-                    <span class="priority-badge ${prio}">${prio.toUpperCase()}</span>
+                    <span class="type-badge ${vtype}">${typeLabel}</span>
                     <div class="v-info">
                         <span class="v-class">${v.detection_class}</span>
-                        <span class="v-meta">Camera ${v.camera_id} &bull; ${ts} &bull; Confidence: ${conf}%</span>
+                        <span class="v-meta">Camera ${v.camera_id} &bull; ${ts} &bull; Conf: ${conf}%</span>
                         ${v.location ? `<span class="v-meta"><i class="fas fa-map-marker-alt"></i> ${v.location}</span>` : ''}
                     </div>
                 </div>
@@ -702,7 +788,7 @@ async function loadViolations() {
                     ? `<button class="btn btn-ghost btn-sm" onclick="downloadVideo(${v.id})" title="Download clip">
                            <i class="fas fa-download"></i> Video
                        </button>`
-                    : `<button class="btn btn-ghost btn-sm" disabled title="Clip not saved — detection may have been stopped before recording finished" style="opacity:.4;cursor:not-allowed;">
+                    : `<button class="btn btn-ghost btn-sm" disabled title="Clip not saved" style="opacity:.4;cursor:not-allowed;">
                            <i class="fas fa-video-slash"></i> No Clip
                        </button>`
                 }

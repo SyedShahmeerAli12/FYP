@@ -26,6 +26,7 @@ class DetectionService:
     CIG_THRESH     = 0.50
     DISPLAY_THRESH = 0.50
     SMOKE_THRESH   = 0.50
+    FIRE_THRESH    = 0.45
     # Timing
     BUFFER_SECS    = 5
     FPS            = 30
@@ -51,6 +52,15 @@ class DetectionService:
         os.makedirs(self._clips_dir, exist_ok=True)
         self.model       = self._load_model("best.pt", ["smoke_best.pt", "best (1).pt", "best(1).pt"])
         self.smoke_model = self._load_model("11k.pt")
+        self.fire_model    = self._load_model("fire.pt")
+        self.fight_model   = self._load_model("fight.pt")
+        self.camera_mode:      Dict[int, str]   = {}
+        self.fire_results:      Dict[int, tuple] = {}
+        self.fire_inferring:    Dict[int, bool]  = {}
+        self.fire_consecutive:  Dict[int, int]   = {}
+        self.fight_results:     Dict[int, tuple] = {}
+        self.fight_inferring:   Dict[int, bool]  = {}
+        self.fight_consecutive: Dict[int, int]   = {}
         if self.model is None:
             raise RuntimeError("Main model not found in weights/")
 
@@ -99,6 +109,10 @@ class DetectionService:
         self.frame_locks[camera_id]       = threading.Lock()
         self.latest_detections[camera_id] = []
         self.smoke_buffer[camera_id]      = deque(maxlen=self.SMOKE_BUF)
+        if camera_id not in self.camera_mode:
+            self.camera_mode[camera_id]    = "smoking"
+        self.fire_consecutive[camera_id]   = 0
+        self.fight_consecutive[camera_id]  = 0
         t = threading.Thread(
             target=self._detection_loop,
             args=(camera_id, camera_info, ws_manager),
@@ -115,12 +129,28 @@ class DetectionService:
         await asyncio.sleep(1)
         for store in (self.active_detections, self.video_buffers, self.frame_times,
                       self.recording_states, self.latest_frames, self.frame_locks,
-                      self.latest_detections, self.smoke_buffer):
+                      self.latest_detections, self.smoke_buffer, self.camera_mode,
+                      self.fire_results, self.fire_inferring, self.fire_consecutive,
+                      self.fight_results, self.fight_inferring, self.fight_consecutive):
             store.pop(camera_id, None)
         return True
 
+    def set_mode(self, camera_id: int, mode: str):
+        self.camera_mode[camera_id] = mode if mode in ("smoking", "fire", "fighting") else "smoking"
+        self.fire_consecutive[camera_id]  = 0
+        self.fight_consecutive[camera_id] = 0
+        print(f"[DBG] cam={camera_id} mode switched → {self.camera_mode[camera_id]}")
+
+    def get_mode(self, camera_id: int) -> str:
+        return self.camera_mode.get(camera_id, "smoking")
+
     def is_detection_running(self, camera_id: int) -> bool:
         return camera_id in self.active_detections
+
+    @staticmethod
+    def _valid_frame(frame) -> bool:
+        return (frame is not None and isinstance(frame, np.ndarray)
+                and frame.size > 0 and len(frame.shape) == 3 and frame.shape[0] > 0 and frame.shape[1] > 0)
 
     # ── Camera open ─────────────────────────────────────────────────────
 
@@ -231,48 +261,154 @@ class DetectionService:
                 if is_rtsp and len(self.video_buffers[camera_id]) > 30 and frame_count % 2:
                     continue
 
-                # ── Model inference ──
-                bbox_display, p_det, p_conf, p_bbox, c_det, c_conf, c_bbox, comb_conf = \
-                    self._process_main_model(frame)
-                s_det, s_conf, s_bbox = self._process_smoke(
-                    frame, camera_id, p_det, p_bbox, c_det, c_bbox)
-
-                # ── Build annotated display frame ──
+                # ── Model inference (mode-based) ──
+                mode    = self.camera_mode.get(camera_id, "smoking")
                 display = frame_copy.copy()
-                if bbox_display:
-                    self._draw_boxes(display, bbox_display)
-                if s_det and s_bbox:
-                    self._draw_boxes(display, [{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}])
 
-                all_display = bbox_display + ([{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}] if s_det and s_bbox else [])
-                self._set_latest(camera_id, display)
-                with self.frame_locks[camera_id]:
-                    self.latest_detections[camera_id] = all_display
+                # Log every 90 frames (~3 s) so terminal shows detection is alive
+                if frame_count % 90 == 0:
+                    print(f"[DBG] cam={camera_id} mode={mode} frame={frame_count} cooldown_left={max(0, self.COOLDOWN-(current_time-last_detected_time)):.0f}s")
 
-                # ── Violation trigger ──
-                if (p_det and c_det and s_det
-                        and comb_conf > self.PERSON_THRESH
-                        and (current_time - last_detected_time) > self.COOLDOWN
-                        and not is_processing
-                        and not self.recording_states.get(camera_id, {}).get("is_recording")):
+                if mode == "fire":
+                    # Use last known result (non-blocking); kick off background inference when free
+                    fire_det, fire_conf, fire_bbox, fire_cls = self.fire_results.get(camera_id, (False, 0.0, None, None))
+                    if not self.fire_inferring.get(camera_id, False) and frame_count % 3 == 0 and self._valid_frame(frame):
+                        self.fire_inferring[camera_id] = True
+                        def _run_fire(f=frame.copy(), cid=camera_id):
+                            result = self._process_fire(f)
+                            self.fire_results[cid] = result
+                            self.fire_inferring[cid] = False
+                        threading.Thread(target=_run_fire, daemon=True).start()
+                    if frame_count % 30 == 0:
+                        if fire_det:
+                            print(f"[DBG-FIRE] class={fire_cls} conf={fire_conf:.2f} thresh={self.FIRE_THRESH} -> {'TRIGGER' if fire_cls=='fire' and fire_conf>=self.FIRE_THRESH else 'below thresh or smoke-only'}")
+                        else:
+                            print(f"[DBG-FIRE] nothing detected")
+                    # Only count actual 'fire' class (not smoke alone) toward consecutive confirmation
+                    if fire_det and fire_cls == 'fire' and fire_conf >= self.FIRE_THRESH:
+                        self.fire_consecutive[camera_id] = self.fire_consecutive.get(camera_id, 0) + 1
+                    else:
+                        self.fire_consecutive[camera_id] = 0
+                    fire_confirmed = self.fire_consecutive.get(camera_id, 0) >= 3
 
-                    is_processing = True
-                    last_detected_time = current_time
-                    self.recording_states[camera_id].update({"is_recording": True, "start_time": current_time})
+                    det_display = []
+                    if fire_det and fire_bbox:
+                        # Show any fire/smoke detection on screen, but only save violation when confirmed fire
+                        lbl = "Fire" if fire_cls == 'fire' else "Smoke"
+                        det_display = [{"class": lbl, "confidence": fire_conf, "bbox": fire_bbox}]
+                        self._draw_boxes(display, det_display)
+                    self._set_latest(camera_id, display)
+                    lock = self.frame_locks.get(camera_id)
+                    if lock:
+                        with lock:
+                            self.latest_detections[camera_id] = det_display
 
-                    final_conf  = (p_conf + c_conf + s_conf) / 3
-                    det_class   = "Person+Cigarette+Smoke"
-                    bbox_for_db = bbox_display + ([{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}] if s_bbox else [])
-                    ts          = datetime.now()
-                    print(f"VIOLATION: {det_class} cam={camera_id} conf={final_conf:.2f}")
-                    self._trigger_violation(camera_id, det_class, final_conf, bbox_for_db, ws_manager, ts)
+                    if (fire_confirmed
+                            and (current_time - last_detected_time) > self.COOLDOWN
+                            and not is_processing
+                            and not self.recording_states.get(camera_id, {}).get("is_recording")):
+                        is_processing = True
+                        last_detected_time = current_time
+                        self.fire_consecutive[camera_id] = 0
+                        self.recording_states[camera_id].update({"is_recording": True, "start_time": current_time})
+                        ts = datetime.now()
+                        print(f"VIOLATION: Fire cam={camera_id} conf={fire_conf:.2f}")
+                        self._trigger_violation(camera_id, "Fire", fire_conf, det_display, ws_manager, ts, "fire")
+                        def _reset_fire(cid=camera_id):
+                            time.sleep(self.COOLDOWN)
+                            nonlocal is_processing
+                            is_processing = False
+                            self.recording_states.get(cid, {}).update({"is_recording": False})
+                        threading.Thread(target=_reset_fire, daemon=True).start()
 
-                    def _reset(cid=camera_id):
-                        time.sleep(self.COOLDOWN)
-                        nonlocal is_processing
-                        is_processing = False
-                        self.recording_states.get(cid, {}).update({"is_recording": False})
-                    threading.Thread(target=_reset, daemon=True).start()
+                elif mode == "fighting":
+                    # Non-blocking background inference every 2nd frame
+                    fight_det, fight_conf, fight_bbox = self.fight_results.get(camera_id, (False, 0.0, None))
+                    if not self.fight_inferring.get(camera_id, False) and frame_count % 2 == 0 and self._valid_frame(frame):
+                        self.fight_inferring[camera_id] = True
+                        def _run_fight(f=frame.copy(), cid=camera_id):
+                            result = self._process_fight(f)
+                            self.fight_results[cid] = result
+                            self.fight_inferring[cid] = False
+                        threading.Thread(target=_run_fight, daemon=True).start()
+
+                    # Consecutive-frame confirmation
+                    if fight_det and fight_conf >= 0.50:
+                        self.fight_consecutive[camera_id] = self.fight_consecutive.get(camera_id, 0) + 1
+                    else:
+                        self.fight_consecutive[camera_id] = 0
+
+                    confirmed = self.fight_consecutive.get(camera_id, 0) >= 4
+
+                    det_display = []
+                    if confirmed and fight_bbox:
+                        det_display = [{"class": "Fight", "confidence": fight_conf, "bbox": fight_bbox}]
+                        self._draw_boxes(display, det_display)
+                    self._set_latest(camera_id, display)
+                    lock = self.frame_locks.get(camera_id)
+                    if lock:
+                        with lock:
+                            self.latest_detections[camera_id] = det_display
+
+                    if (confirmed
+                            and (current_time - last_detected_time) > self.COOLDOWN
+                            and not is_processing
+                            and not self.recording_states.get(camera_id, {}).get("is_recording")):
+                        is_processing = True
+                        last_detected_time = current_time
+                        self.fight_consecutive[camera_id] = 0
+                        self.recording_states[camera_id].update({"is_recording": True, "start_time": current_time})
+                        ts = datetime.now()
+                        print(f"VIOLATION: Fight cam={camera_id} conf={fight_conf:.2f}")
+                        self._trigger_violation(camera_id, "Fight", fight_conf, det_display, ws_manager, ts, "fighting")
+                        def _reset_fight(cid=camera_id):
+                            time.sleep(self.COOLDOWN)
+                            nonlocal is_processing
+                            is_processing = False
+                            self.recording_states.get(cid, {}).update({"is_recording": False})
+                        threading.Thread(target=_reset_fight, daemon=True).start()
+
+                else:  # smoking mode
+                    bbox_display, p_det, p_conf, p_bbox, c_det, c_conf, c_bbox, comb_conf = \
+                        self._process_main_model(frame)
+                    s_det, s_conf, s_bbox = self._process_smoke(
+                        frame, camera_id, p_det, p_bbox, c_det, c_bbox)
+
+                    if frame_count % 30 == 0:  # log smoking status ~1/s
+                        print(f"[DBG-SMOKE] person={p_det}({p_conf:.2f}) cig={c_det}({c_conf:.2f}) smoke={s_det}({s_conf:.2f}) -> trigger={'READY' if p_det and c_det and s_det else 'waiting'}")
+
+                    if bbox_display:
+                        self._draw_boxes(display, bbox_display)
+                    if s_det and s_bbox:
+                        self._draw_boxes(display, [{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}])
+
+                    all_display = bbox_display + ([{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}] if s_det and s_bbox else [])
+                    self._set_latest(camera_id, display)
+                    lock = self.frame_locks.get(camera_id)
+                    if lock:
+                        with lock:
+                            self.latest_detections[camera_id] = all_display
+
+                    if (p_det and c_det and s_det
+                            and comb_conf > self.PERSON_THRESH
+                            and (current_time - last_detected_time) > self.COOLDOWN
+                            and not is_processing
+                            and not self.recording_states.get(camera_id, {}).get("is_recording")):
+                        is_processing = True
+                        last_detected_time = current_time
+                        self.recording_states[camera_id].update({"is_recording": True, "start_time": current_time})
+                        final_conf  = (p_conf + c_conf + s_conf) / 3
+                        det_class   = "Person+Cigarette+Smoke"
+                        bbox_for_db = bbox_display + ([{"class": "Smoke", "confidence": s_conf, "bbox": s_bbox}] if s_bbox else [])
+                        ts          = datetime.now()
+                        print(f"VIOLATION: {det_class} cam={camera_id} conf={final_conf:.2f}")
+                        self._trigger_violation(camera_id, det_class, final_conf, bbox_for_db, ws_manager, ts, "smoking")
+                        def _reset_smoke(cid=camera_id):
+                            time.sleep(self.COOLDOWN)
+                            nonlocal is_processing
+                            is_processing = False
+                            self.recording_states.get(cid, {}).update({"is_recording": False})
+                        threading.Thread(target=_reset_smoke, daemon=True).start()
 
                 time.sleep(1.0 / self.FPS)
 
@@ -416,8 +552,61 @@ class DetectionService:
 
         return (best_conf > 0), best_conf, best_bbox
 
+    def _process_fire(self, frame):
+        """Run fire model on a resized frame, return (detected, conf, bbox)."""
+        if self.fire_model is None or not self._valid_frame(frame):
+            return False, 0.0, None
+        try:
+            # Resize to 416px wide to reduce inference time
+            h, w = frame.shape[:2]
+            scale = 416 / w
+            small = cv2.resize(frame, (416, int(h * scale)))
+            results = self.fire_model(small, device=self.device, verbose=False, conf=0.20, max_det=10)
+        except Exception:
+            return False, 0.0, None
+
+        best_conf, best_bbox, best_cls = 0.0, None, None
+        for r in results:
+            for box in r.boxes:
+                conf = float(box.conf[0])
+                cls  = int(box.cls[0])
+                name = self.fire_model.names[cls].lower()
+                # Prefer 'fire' class (0) over 'smoke' (1)
+                priority = 1 if name == 'fire' else 0
+                if conf > best_conf or (conf == best_conf and priority > 0):
+                    sx1, sy1, sx2, sy2 = map(int, box.xyxy[0])
+                    # Scale bbox back to original frame size
+                    inv = 1 / scale
+                    best_conf = conf
+                    best_bbox = [int(sx1*inv), int(sy1*inv), int(sx2*inv), int(sy2*inv)]
+                    best_cls  = name
+        if best_conf > 0:
+            print(f"[DBG-FIRE-RAW] class={best_cls} conf={best_conf:.2f}")
+        return (best_conf > 0), best_conf, best_bbox, best_cls
+
+    def _process_fight(self, frame):
+        """Run fight/violence model, return (detected, conf, bbox)."""
+        if self.fight_model is None or not self._valid_frame(frame):
+            return False, 0.0, None
+        try:
+            results = self.fight_model(frame, device=self.device, verbose=False, conf=0.30, max_det=10)
+        except Exception:
+            return False, 0.0, None
+        best_conf, best_bbox = 0.0, None
+        for r in results:
+            for box in r.boxes:
+                name = self.fight_model.names[int(box.cls[0])].lower()
+                if name == "violence":
+                    conf = float(box.conf[0])
+                    if conf > best_conf:
+                        best_conf = conf
+                        best_bbox = list(map(int, box.xyxy[0]))
+        if best_conf > 0:
+            print(f"[DBG-FIGHT-RAW] conf={best_conf:.2f}")
+        return (best_conf > 0), best_conf, best_bbox
+
     def _draw_boxes(self, frame, detections):
-        colors = {"Person": (0, 255, 0), "Cigarette": (255, 165, 0), "Smoke": (0, 0, 255)}
+        colors = {"Person": (0, 255, 0), "Cigarette": (255, 165, 0), "Smoke": (0, 0, 255), "Fire": (0, 69, 255), "Fight": (128, 0, 128)}
         for det in detections:
             x1, y1, x2, y2 = det["bbox"]
             color = colors.get(det["class"], (0, 255, 0))
@@ -437,7 +626,7 @@ class DetectionService:
             loop.close()
 
 
-    def _trigger_violation(self, camera_id, det_class, conf, bbox_data, ws_manager, ts: datetime):
+    def _trigger_violation(self, camera_id, det_class, conf, bbox_data, ws_manager, ts: datetime, violation_type: str = "smoking"):
         video_path = os.path.join(
             self._clips_dir,
             f"detection_{ts.strftime('%Y-%m-%d_%H-%M-%S')}_cam{camera_id}_{det_class}_{conf:.2f}.mp4",
@@ -445,10 +634,12 @@ class DetectionService:
         violation = {
             "camera_id": camera_id, "detection_class": det_class, "confidence": conf,
             "video_path": video_path, "timestamp": ts, "frame_count": 0, "bbox_data": bbox_data,
+            "violation_type": violation_type,
         }
         alert = {
             "type": "violation_alert", "camera_id": camera_id,
             "detection_class": det_class, "confidence": conf, "timestamp": ts.isoformat(),
+            "violation_type": violation_type,
         }
         threading.Thread(target=self._run_async, args=(self._save_to_db(violation, ws_manager),), daemon=True).start()
         threading.Thread(target=self._run_async, args=(ws_manager.broadcast(alert),), daemon=True).start()
@@ -464,12 +655,13 @@ class DetectionService:
                 location = await self._get_location(conn, violation["camera_id"])
                 vid = await conn.fetchval("""
                     INSERT INTO violations
-                    (camera_id, detection_class, confidence, video_path, timestamp, frame_count, bbox_data, location)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id
+                    (camera_id, detection_class, confidence, video_path, timestamp, frame_count, bbox_data, location, violation_type)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id
                 """,
                     violation["camera_id"], violation["detection_class"], violation["confidence"],
                     violation["video_path"], violation["timestamp"], 0,
                     json.dumps(violation.get("bbox_data", [])), location,
+                    violation.get("violation_type", "smoking"),
                 )
                 print(f"Violation saved to DB: ID={vid}")
             finally:
@@ -521,6 +713,8 @@ class DetectionService:
             stored = self.latest_detections.get(camera_id, [])
             try:
                 for frame in frames:
+                    if not self._valid_frame(frame):
+                        continue
                     f2 = frame.copy()
                     if stored:
                         self._draw_boxes(f2, stored)
@@ -654,9 +848,15 @@ class DetectionService:
                 continue
 
             try:
-                disp = cv2.resize(frame, (640, 360))
+                if self._valid_frame(frame):
+                    disp = cv2.resize(frame, (640, 360))
+                else:
+                    disp = last_good if self._valid_frame(last_good) else None
             except Exception:
                 disp = frame
+            if disp is None:
+                time.sleep(0.1)
+                continue
             ok, buf = cv2.imencode('.jpg', disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if ok:
                 yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n'

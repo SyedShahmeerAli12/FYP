@@ -52,8 +52,6 @@ _load_env(".env")
 DEFAULT_CAMERA1 = "rtsp://admin:Dammah24@172.20.10.12:554/Streaming/Channels/101"
 CAMERA_SOURCES  = {
     1: _parse_camera_source(os.getenv("CAMERA1_SOURCE", DEFAULT_CAMERA1)),
-    2: _parse_camera_source(os.getenv("CAMERA2_SOURCE", "0")),
-    3: _parse_camera_source(os.getenv("CAMERA3_SOURCE", "0")),
 }
 
 db                = Database()
@@ -307,8 +305,12 @@ async def remove_admin(user_id: int, current_user: dict = Depends(get_current_us
 @app.get("/api/cameras")
 async def get_cameras(current_user: dict = Depends(get_current_user)):
     cameras = [
-        {"id": i, "name": f"Camera 0{i}", "source": str(CAMERA_SOURCES.get(i)), "status": "available"}
-        for i in (1, 2, 3)
+        {
+            "id": 1, "name": "Camera 01",
+            "source": str(CAMERA_SOURCES.get(1)), "status": "available",
+            "mode": detection_service.get_mode(1) if detection_service else "smoking",
+            "is_running": detection_service.is_detection_running(1) if detection_service else False,
+        }
     ]
     return {"cameras": cameras}
 
@@ -336,7 +338,18 @@ async def stop_detection(camera_id: int, current_user: dict = Depends(get_curren
 @app.get("/api/cameras/{camera_id}/status")
 async def get_status(camera_id: int, current_user: dict = Depends(get_current_user)):
     is_running = detection_service.is_detection_running(camera_id) if detection_service else False
-    return {"camera_id": camera_id, "is_running": is_running}
+    mode       = detection_service.get_mode(camera_id) if detection_service else "smoking"
+    return {"camera_id": camera_id, "is_running": is_running, "mode": mode}
+
+
+@app.post("/api/cameras/{camera_id}/mode")
+async def set_mode(camera_id: int, body: dict, current_user: dict = Depends(get_current_user)):
+    mode = body.get("mode", "smoking")
+    if mode not in ("smoking", "fire", "fighting"):
+        raise HTTPException(400, "mode must be 'smoking', 'fire', or 'fighting'")
+    if detection_service:
+        detection_service.set_mode(camera_id, mode)
+    return {"camera_id": camera_id, "mode": mode}
 
 
 @app.get("/api/cameras/{camera_id}/stream")
@@ -373,10 +386,11 @@ async def get_violations(
     camera_id: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    violation_type: Optional[str] = None,
     limit: int = 100,
     current_user: dict = Depends(get_current_user),
 ):
-    violations = await db.get_violations(camera_id=camera_id, start_date=start_date, end_date=end_date, limit=limit)
+    violations = await db.get_violations(camera_id=camera_id, start_date=start_date, end_date=end_date, violation_type=violation_type, limit=limit)
     for v in violations:
         v["has_video"] = bool(v.get("video_path") and os.path.exists(v["video_path"]))
     return {"violations": violations, "count": len(violations)}
@@ -405,8 +419,25 @@ async def download_video(violation_id: int, current_user: dict = Depends(get_cur
 
 
 @app.get("/api/dashboard/stats")
-async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
-    return await db.get_dashboard_stats()
+async def get_dashboard_stats(
+    period: Optional[str] = 'all',
+    vtype:  Optional[str] = 'all',
+    current_user: dict = Depends(get_current_user),
+):
+    period = period if period in ('today', 'week', 'month', 'all') else 'all'
+    vtype  = vtype  if vtype  in ('smoking', 'fire', 'fighting', 'all') else 'all'
+    return await db.get_dashboard_stats(period=period, vtype=vtype)
+
+
+@app.get("/api/dashboard/charts")
+async def get_dashboard_charts(
+    period: Optional[str] = 'all',
+    vtype:  Optional[str] = 'all',
+    current_user: dict = Depends(get_current_user),
+):
+    period = period if period in ('today', 'week', 'month', 'all') else 'all'
+    vtype  = vtype  if vtype  in ('smoking', 'fire', 'fighting', 'all') else 'all'
+    return await db.get_chart_data(period=period, vtype=vtype)
 
 
 app.mount("/", StaticFiles(directory="FYP-UI-REPO", html=True), name="ui")

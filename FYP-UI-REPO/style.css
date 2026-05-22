@@ -256,6 +256,60 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 16px; margin-bottom: 20px;
 }
+/* ── Filter Bar ─────────────────────────────────────────────────────────────── */
+.filter-bar {
+    display: flex; flex-wrap: wrap; gap: 20px; align-items: center;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+.filter-group {
+    display: flex; align-items: center; gap: 12px;
+}
+.filter-group + .filter-group {
+    padding-left: 20px;
+    border-left: 1px solid var(--border);
+}
+.filter-label {
+    font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    color: var(--muted); text-transform: uppercase; white-space: nowrap;
+    display: flex; align-items: center; gap: 5px;
+}
+/* Period — joined segmented control */
+.filter-pills.segmented {
+    display: flex; gap: 0;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 3px;
+}
+.filter-pills.segmented .filter-pill {
+    border: none; background: transparent;
+    color: var(--muted); font-size: 12px; font-weight: 500;
+    padding: 5px 14px; border-radius: 6px; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+}
+.filter-pills.segmented .filter-pill:hover { color: var(--text); }
+.filter-pills.segmented .filter-pill.active {
+    background: #fff; color: var(--text); font-weight: 600;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+}
+/* Type — colored tag chips */
+.filter-pills.tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-pill.tag {
+    display: flex; align-items: center; gap: 5px;
+    border: 1.5px solid var(--border); background: transparent;
+    color: var(--muted); font-size: 12px; font-weight: 500;
+    padding: 5px 14px; border-radius: 99px; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+}
+.filter-pill.tag:hover { background: var(--bg); color: var(--text); }
+.filter-pill.tag.active                { background: #1e293b; border-color: #1e293b; color: #fff; }
+.filter-pill.tag.smoking-pill.active   { background: #f97316; border-color: #f97316; color: #fff; }
+.filter-pill.tag.fire-pill.active      { background: #ef4444; border-color: #ef4444; color: #fff; }
+.filter-pill.tag.fight-pill.active     { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+
 .stat-card {
     border-radius: 10px; padding: 18px;
     color: #fff; display: flex; align-items: center; gap: 14px;
@@ -424,6 +478,58 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
     transition: opacity .25s, transform .25s;
 }
 .toast.toast-show { opacity: 1; transform: translateX(0); }
+
+/* ── Violation type badges ───────────────────────────────────────────────────── */
+.type-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 99px; white-space: nowrap; flex-shrink: 0;
+}
+.type-badge.smoking { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+.type-badge.fire    { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+
+/* ── Detection mode selector ─────────────────────────────────────────────────── */
+.mode-selector-bar {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--white); border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 16px;
+    border: 1px solid var(--border); flex-wrap: wrap;
+}
+.mode-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+.mode-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    border: 2px solid var(--border); background: var(--bg); color: var(--muted);
+    cursor: pointer; transition: all .15s;
+}
+.mode-btn:hover { border-color: #94a3b8; color: var(--text); }
+.mode-btn.active[id="modeBtnSmoking"] { background: #fff7ed; border-color: #f97316; color: #c2410c; }
+.mode-btn.active[id="modeBtnFire"]      { background: #fef2f2; border-color: #ef4444; color: #b91c1c; }
+.mode-btn.active[id="modeBtnFighting"]  { background: #f5f3ff; border-color: #7c3aed; color: #5b21b6; }
+.mode-active-label {
+    margin-left: auto; font-size: 12px; font-weight: 700;
+    padding: 4px 12px; border-radius: 99px;
+}
+.mode-active-label.smoking  { background: #fff7ed; color: #c2410c; }
+.mode-active-label.fire     { background: #fef2f2; color: #b91c1c; }
+.mode-active-label.fighting { background: #f5f3ff; color: #5b21b6; }
+
+/* ── Donut chart breakdown ───────────────────────────────────────────────────── */
+.type-breakdown { display: flex; flex-direction: column; gap: 6px; padding: 8px 4px; }
+.type-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.type-row strong { margin-left: auto; font-weight: 700; }
+.type-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.type-dot.smoking { background: #f97316; }
+.type-dot.fire     { background: #ef4444; }
+.type-dot.fighting { background: #7c3aed; }
+
+/* ── Alert dot colors ────────────────────────────────────────────────────────── */
+.alert-dot.fire    { background: #ef4444; }
+.alert-dot.smoking { background: #f97316; }
+
+/* ── Purple stat card ────────────────────────────────────────────────────────── */
+.stat-card.purple { background: #7c3aed; }
+.stat-card.violet { background: #6d28d9; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
