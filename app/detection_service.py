@@ -26,7 +26,8 @@ class DetectionService:
     CIG_THRESH     = 0.50
     DISPLAY_THRESH = 0.50
     SMOKE_THRESH   = 0.50
-    FIRE_THRESH    = 0.45
+    FIRE_THRESH    = 0.60
+    FIRE_COOLDOWN  = 40
     # Timing
     BUFFER_SECS    = 5
     FPS            = 30
@@ -304,7 +305,7 @@ class DetectionService:
                             self.latest_detections[camera_id] = det_display
 
                     if (fire_confirmed
-                            and (current_time - last_detected_time) > self.COOLDOWN
+                            and (current_time - last_detected_time) > self.FIRE_COOLDOWN
                             and not is_processing
                             and not self.recording_states.get(camera_id, {}).get("is_recording")):
                         is_processing = True

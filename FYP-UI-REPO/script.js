@@ -470,13 +470,13 @@ function buildChartType(smokingTotal, fireTotal, fightingTotal) {
     if (chartType) chartType.destroy();
     const total = smokingTotal + fireTotal + fightingTotal;
     chartType = new Chart(ctx, {
-        type: 'doughnut',
+        type: 'pie',
         data: {
             labels: ['Smoking', 'Fire', 'Fighting'],
             datasets: [{ data: [smokingTotal, fireTotal, fightingTotal], backgroundColor: ['#f97316', '#ef4444', '#7c3aed'], borderWidth: 0, hoverOffset: 4 }],
         },
         options: {
-            responsive: true, maintainAspectRatio: false, cutout: '70%',
+            responsive: true, maintainAspectRatio: false,
             plugins: {
                 legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 12 } },
                 tooltip: { callbacks: { label: c => ` ${c.label}: ${c.raw} (${total ? ((c.raw/total)*100).toFixed(0) : 0}%)` } },
