@@ -286,7 +286,7 @@ class DetectionService:
                         else:
                             print(f"[DBG-FIRE] nothing detected")
                     # Sliding window: fire>=0.25 or smoke>=0.50 counts as a hit; 5/10 hits = confirmed
-                    smoke_thresh = 0.50
+                    smoke_thresh = 0.65
                     hit = (fire_det and (
                         (fire_cls == 'fire'  and fire_conf >= 0.25) or
                         (fire_cls == 'smoke' and fire_conf >= smoke_thresh)
