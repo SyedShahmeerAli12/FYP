@@ -58,7 +58,7 @@ class DetectionService:
         self.camera_mode:      Dict[int, str]   = {}
         self.fire_results:      Dict[int, tuple] = {}
         self.fire_inferring:    Dict[int, bool]  = {}
-        self.fire_consecutive:  Dict[int, int]   = {}
+        self.fire_window:       Dict[int, deque]  = {}
         self.fight_results:     Dict[int, tuple] = {}
         self.fight_inferring:   Dict[int, bool]  = {}
         self.fight_consecutive: Dict[int, int]   = {}
@@ -112,7 +112,7 @@ class DetectionService:
         self.smoke_buffer[camera_id]      = deque(maxlen=self.SMOKE_BUF)
         if camera_id not in self.camera_mode:
             self.camera_mode[camera_id]    = "smoking"
-        self.fire_consecutive[camera_id]   = 0
+        self.fire_window[camera_id]        = deque(maxlen=10)
         self.fight_consecutive[camera_id]  = 0
         t = threading.Thread(
             target=self._detection_loop,
@@ -131,14 +131,14 @@ class DetectionService:
         for store in (self.active_detections, self.video_buffers, self.frame_times,
                       self.recording_states, self.latest_frames, self.frame_locks,
                       self.latest_detections, self.smoke_buffer, self.camera_mode,
-                      self.fire_results, self.fire_inferring, self.fire_consecutive,
+                      self.fire_results, self.fire_inferring, self.fire_window,
                       self.fight_results, self.fight_inferring, self.fight_consecutive):
             store.pop(camera_id, None)
         return True
 
     def set_mode(self, camera_id: int, mode: str):
         self.camera_mode[camera_id] = mode if mode in ("smoking", "fire", "fighting") else "smoking"
-        self.fire_consecutive[camera_id]  = 0
+        self.fire_window[camera_id]  = deque(maxlen=10)
         self.fight_consecutive[camera_id] = 0
         print(f"[DBG] cam={camera_id} mode switched → {self.camera_mode[camera_id]}")
 
@@ -285,12 +285,17 @@ class DetectionService:
                             print(f"[DBG-FIRE] class={fire_cls} conf={fire_conf:.2f} thresh={self.FIRE_THRESH} -> {'TRIGGER' if fire_cls=='fire' and fire_conf>=self.FIRE_THRESH else 'below thresh or smoke-only'}")
                         else:
                             print(f"[DBG-FIRE] nothing detected")
-                    # Only count actual 'fire' class (not smoke alone) toward consecutive confirmation
-                    if fire_det and fire_cls == 'fire' and fire_conf >= self.FIRE_THRESH:
-                        self.fire_consecutive[camera_id] = self.fire_consecutive.get(camera_id, 0) + 1
-                    else:
-                        self.fire_consecutive[camera_id] = 0
-                    fire_confirmed = self.fire_consecutive.get(camera_id, 0) >= 3
+                    # Sliding window: fire>=0.25 or smoke>=0.50 counts as a hit; 5/10 hits = confirmed
+                    smoke_thresh = 0.50
+                    hit = (fire_det and (
+                        (fire_cls == 'fire'  and fire_conf >= 0.25) or
+                        (fire_cls == 'smoke' and fire_conf >= smoke_thresh)
+                    ))
+                    if camera_id not in self.fire_window:
+                        self.fire_window[camera_id] = deque(maxlen=10)
+                    self.fire_window[camera_id].append(hit)
+                    fire_confirmed = (len(self.fire_window[camera_id]) == 10 and
+                                      sum(self.fire_window[camera_id]) >= 5)
 
                     det_display = []
                     if fire_det and fire_bbox and fire_cls == 'fire':
@@ -308,7 +313,7 @@ class DetectionService:
                             and not self.recording_states.get(camera_id, {}).get("is_recording")):
                         is_processing = True
                         last_detected_time = current_time
-                        self.fire_consecutive[camera_id] = 0
+                        self.fire_window[camera_id].clear()
                         self.recording_states[camera_id].update({"is_recording": True, "start_time": current_time})
                         ts = datetime.now()
                         print(f"VIOLATION: Fire cam={camera_id} conf={fire_conf:.2f}")
