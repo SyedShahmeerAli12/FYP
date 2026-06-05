@@ -294,7 +294,7 @@ class DetectionService:
                     if camera_id not in self.fire_window:
                         self.fire_window[camera_id] = deque(maxlen=10)
                     self.fire_window[camera_id].append(hit)
-                    fire_confirmed = sum(self.fire_window[camera_id]) >= 5
+                    fire_confirmed = sum(self.fire_window[camera_id]) >= 3
 
                     det_display = []
                     if fire_det and fire_bbox and fire_cls == 'fire':
