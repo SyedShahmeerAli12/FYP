@@ -26,7 +26,7 @@ class DetectionService:
     CIG_THRESH     = 0.50
     DISPLAY_THRESH = 0.50
     SMOKE_THRESH   = 0.50
-    FIRE_THRESH    = 0.60
+    FIRE_THRESH    = 0.50
     FIRE_COOLDOWN  = 40
     # Timing
     BUFFER_SECS    = 5
