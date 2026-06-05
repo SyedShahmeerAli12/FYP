@@ -293,10 +293,8 @@ class DetectionService:
                     fire_confirmed = self.fire_consecutive.get(camera_id, 0) >= 3
 
                     det_display = []
-                    if fire_det and fire_bbox:
-                        # Show any fire/smoke detection on screen, but only save violation when confirmed fire
-                        lbl = "Fire" if fire_cls == 'fire' else "Smoke"
-                        det_display = [{"class": lbl, "confidence": fire_conf, "bbox": fire_bbox}]
+                    if fire_det and fire_bbox and fire_cls == 'fire':
+                        det_display = [{"class": "Fire", "confidence": fire_conf, "bbox": fire_bbox}]
                         self._draw_boxes(display, det_display)
                     self._set_latest(camera_id, display)
                     lock = self.frame_locks.get(camera_id)
