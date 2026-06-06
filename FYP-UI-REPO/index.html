@@ -270,8 +270,14 @@
                 <div class="charts-row">
                     <div class="card" style="flex:1;">
                         <div class="card-head">
-                            <div class="card-title">30-Day Trend</div>
-                            <div class="card-sub">Daily violation count</div>
+                            <div>
+                                <div class="card-title" id="trendTitle">30-Day Trend</div>
+                                <div class="card-sub" id="trendSub">Daily violation count</div>
+                            </div>
+                            <div style="display:flex;gap:6px;">
+                                <button id="btnTrendMonthly" onclick="switchTrend('monthly')" class="trend-toggle active">Monthly</button>
+                                <button id="btnTrendYearly" onclick="switchTrend('yearly')" class="trend-toggle">Yearly</button>
+                            </div>
                         </div>
                         <div class="chart-box"><canvas id="chartTrend"></canvas></div>
                     </div>

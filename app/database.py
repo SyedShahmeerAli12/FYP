@@ -408,6 +408,12 @@ class Database:
                 WHERE timestamp >= CURRENT_DATE - INTERVAL '29 days' AND {vc}
                 GROUP BY day ORDER BY day ASC
             """)
+            yearly = await conn.fetch(f"""
+                SELECT DATE_TRUNC('month', timestamp) as month, COUNT(*) as count
+                FROM violations
+                WHERE timestamp >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months' AND {vc}
+                GROUP BY month ORDER BY month ASC
+            """)
             hourly = await conn.fetch(f"""
                 SELECT EXTRACT(HOUR FROM timestamp)::int as hour, COUNT(*) as count
                 FROM violations
@@ -418,5 +424,6 @@ class Database:
         return {
             "weekly":  [{"day": str(r["day"]), "type": r["vtype"], "count": r["count"]} for r in weekly],
             "monthly": [{"day": str(r["day"]), "count": r["count"]} for r in monthly],
+            "yearly":  [{"month": str(r["month"])[:7], "count": r["count"]} for r in yearly],
             "hourly":  [{"hour": r["hour"], "count": r["count"]} for r in hourly],
         }

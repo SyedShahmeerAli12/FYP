@@ -412,18 +412,28 @@ function renderKPIs(s) {
 function populateFilters() {}
 
 let chartWeekly = null, chartType = null, chartTrend = null, chartHourly = null;
+let _trendMonthly = [], _trendYearly = [], _trendMode = 'monthly';
 
 async function renderCharts(stats, qs = '') {
     buildChartType(stats.smoking_total ?? 0, stats.fire_total ?? 0, stats.fighting_total ?? 0);
     try {
         const res  = await api(`/api/dashboard/charts${qs}`);
         const data = await res.json();
-        buildChartWeekly(data.weekly  || []);
-        buildChartTrend(data.monthly  || []);
-        buildChartHourly(data.hourly  || []);
+        _trendMonthly = data.monthly || [];
+        _trendYearly  = data.yearly  || [];
+        buildChartWeekly(data.weekly || []);
+        buildChartTrend(_trendMode === 'yearly' ? _trendYearly : _trendMonthly, _trendMode);
+        buildChartHourly(data.hourly || []);
     } catch (e) {
         console.error('chart data error', e);
     }
+}
+
+function switchTrend(mode) {
+    _trendMode = mode;
+    document.getElementById('btnTrendMonthly').classList.toggle('active', mode === 'monthly');
+    document.getElementById('btnTrendYearly').classList.toggle('active', mode === 'yearly');
+    buildChartTrend(mode === 'yearly' ? _trendYearly : _trendMonthly, mode);
 }
 
 // ── Last 7 Days stacked bar ───────────────────────────────────────────────────
@@ -490,13 +500,25 @@ function buildChartType(smokingTotal, fireTotal, fightingTotal) {
         <div class="type-row"><span class="type-dot fighting"></span><span>Fighting</span><strong>${fightingTotal}</strong></div>`;
 }
 
-// ── 30-Day Trend line ────────────────────────────────────────────────────────
-function buildChartTrend(data) {
+// ── Trend line (monthly 30-day or yearly 12-month) ───────────────────────────
+function buildChartTrend(data, mode = 'monthly') {
     const ctx = document.getElementById('chartTrend');
     if (!ctx) return;
     if (chartTrend) chartTrend.destroy();
-    const labels = data.map(d => new Date(d.day + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-    const values = data.map(d => d.count);
+
+    let labels, values;
+    if (mode === 'yearly') {
+        labels = data.map(d => new Date(d.month + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
+        values = data.map(d => d.count);
+        document.getElementById('trendTitle').textContent = '12-Month Trend';
+        document.getElementById('trendSub').textContent   = 'Monthly violation count';
+    } else {
+        labels = data.map(d => new Date(d.day + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        values = data.map(d => d.count);
+        document.getElementById('trendTitle').textContent = '30-Day Trend';
+        document.getElementById('trendSub').textContent   = 'Daily violation count';
+    }
+
     chartTrend = new Chart(ctx, {
         type: 'line',
         data: {
@@ -506,7 +528,7 @@ function buildChartTrend(data) {
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 12 } } },
         },
     });
 }
