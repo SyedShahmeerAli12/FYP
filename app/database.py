@@ -335,6 +335,7 @@ class Database:
             'today': "DATE(timestamp) = CURRENT_DATE",
             'week':  "timestamp >= DATE_TRUNC('week',  CURRENT_TIMESTAMP)",
             'month': "timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)",
+            'year':  "timestamp >= DATE_TRUNC('year',  CURRENT_TIMESTAMP)",
         }.get(period, "1=1")
 
     @staticmethod
@@ -357,7 +358,8 @@ class Database:
                     COUNT(*) FILTER (WHERE {ve} = 'fighting') as fighting_total,
                     COUNT(*) FILTER (WHERE DATE(timestamp) = CURRENT_DATE) as today,
                     COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('week',  CURRENT_TIMESTAMP)) as week,
-                    COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)) as month
+                    COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('month', CURRENT_TIMESTAMP)) as month,
+                    COUNT(*) FILTER (WHERE timestamp >= DATE_TRUNC('year',  CURRENT_TIMESTAMP)) as year
                 FROM violations {where}
             """)
 
@@ -377,6 +379,7 @@ class Database:
             "today_violations": counts["today"]          or 0,
             "week_violations":  counts["week"]           or 0,
             "month_violations": counts["month"]          or 0,
+            "year_violations":  counts["year"]           or 0,
             "smoking_total":    counts["smoking_total"]  or 0,
             "fire_total":       counts["fire_total"]     or 0,
             "fighting_total":   counts["fighting_total"] or 0,

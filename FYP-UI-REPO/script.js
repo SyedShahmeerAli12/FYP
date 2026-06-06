@@ -779,6 +779,8 @@ async function loadViolations() {
     } else if (period === 'month') {
         const d = new Date(now); d.setMonth(d.getMonth() - 1);
         url += `&start_date=${d.toISOString().split('T')[0]}`;
+    } else if (period === 'year') {
+        url += `&start_date=${now.getFullYear()}-01-01`;
     }
 
     try {

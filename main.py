@@ -398,7 +398,7 @@ async def get_violations(
 
 @app.get("/api/violations/stats")
 async def get_violation_stats(
-    period: str = "month",
+    period: str = "year",
     camera_id: Optional[int] = None,
     detection_class: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
@@ -424,7 +424,7 @@ async def get_dashboard_stats(
     vtype:  Optional[str] = 'all',
     current_user: dict = Depends(get_current_user),
 ):
-    period = period if period in ('today', 'week', 'month', 'all') else 'all'
+    period = period if period in ('today', 'week', 'month', 'year', 'all') else 'all'
     vtype  = vtype  if vtype  in ('smoking', 'fire', 'fighting', 'all') else 'all'
     return await db.get_dashboard_stats(period=period, vtype=vtype)
 
@@ -435,7 +435,7 @@ async def get_dashboard_charts(
     vtype:  Optional[str] = 'all',
     current_user: dict = Depends(get_current_user),
 ):
-    period = period if period in ('today', 'week', 'month', 'all') else 'all'
+    period = period if period in ('today', 'week', 'month', 'year', 'all') else 'all'
     vtype  = vtype  if vtype  in ('smoking', 'fire', 'fighting', 'all') else 'all'
     return await db.get_chart_data(period=period, vtype=vtype)
 
